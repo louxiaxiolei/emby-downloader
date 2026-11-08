@@ -134,6 +134,7 @@ ResolvedPlayback instantPlayback({
   required String accessToken,
   required EmbyItem item,
   Map<String, String> headers = const {},
+  String? deviceId,
 }) {
   final source = item.mediaSources.isEmpty ? null : item.mediaSources.first;
   final sourceId = source != null && source.id.isNotEmpty ? source.id : '';
@@ -143,7 +144,8 @@ ResolvedPlayback instantPlayback({
       itemId: item.id,
       accessToken: accessToken,
       mediaSourceId: sourceId,
-      container: null,
+      container: source?.container,
+      deviceId: deviceId,
     ).toString(),
     accessToken,
   );
@@ -151,7 +153,6 @@ ResolvedPlayback instantPlayback({
     url: url,
     playMethod: 'DirectPlay',
     headers: headers,
-    playSessionId: 'play-${item.id}',
     mediaSourceId: sourceId.isEmpty ? null : sourceId,
     resume: resumePosition(item.playbackPositionTicks, item.runTimeTicks),
   );

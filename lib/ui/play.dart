@@ -21,7 +21,8 @@ Future<void> playItem(BuildContext context, EmbyItem item) {
     apiRoot: client.session.apiRoot,
     accessToken: client.session.accessToken,
     item: item,
-    headers: client.headers,
+    headers: client.mediaHeaders,
+    deviceId: client.deviceId,
   );
   return Navigator.of(context).push(
     MaterialPageRoute<void>(

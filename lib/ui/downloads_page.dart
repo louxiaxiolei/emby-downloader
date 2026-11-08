@@ -62,6 +62,13 @@ class DownloadsPage extends StatelessWidget {
               title: const Text('完成后保存到系统下载目录'),
               onChanged: settings.setPublicDownloads,
             ),
+          SwitchListTile(
+            contentPadding: EdgeInsets.zero,
+            value: settings.saveRecordingsToPhotos,
+            title: const Text('录完自动保存到相册'),
+            subtitle: Text('MKV 会先封装成 MP4。不支持的编码会转码。', style: TextStyle(color: cinema.muted, fontSize: 12)),
+            onChanged: settings.setSaveRecordingsToPhotos,
+          ),
           const SizedBox(height: 8),
           Text('进行中', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cinema.text)),
           const SizedBox(height: 8),

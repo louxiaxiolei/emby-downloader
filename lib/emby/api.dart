@@ -44,6 +44,13 @@ class EmbyClient {
     'X-Emby-Token': session.accessToken,
   };
 
+  /// Auth headers for a media byte stream. `Accept: application/json` is left off.
+  Map<String, String> get mediaHeaders {
+    final copy = Map<String, String>.from(headers);
+    copy.remove('Accept');
+    return copy;
+  }
+
   Future<EmbyPage> views() {
     return _getPage('/Users/${session.userId}/Views');
   }
@@ -181,18 +188,58 @@ class EmbyClient {
     required String itemId,
     String? mediaSourceId,
     int startTimeTicks = 0,
-  }) {
-    return _postObject(
-      '/Items/$itemId/PlaybackInfo',
-      {
-        'UserId': session.userId,
-        'MaxStreamingBitrate': '140000000',
-        'StartTimeTicks': '$startTimeTicks',
-        'AutoOpenLiveStream': 'true',
-        if (mediaSourceId != null && mediaSourceId.isNotEmpty) 'MediaSourceId': mediaSourceId,
-      },
-      {'DeviceProfile': embyDirectPlayProfile()},
-    );
+    bool openLiveStream = false,
+  }) async {
+    final uri = apiUri(session.apiRoot, '/Items/$itemId/PlaybackInfo', {
+      'UserId': session.userId,
+      'MaxStreamingBitrate': '140000000',
+      'StartTimeTicks': '$startTimeTicks',
+      'AutoOpenLiveStream': openLiveStream ? 'true' : 'false',
+      if (mediaSourceId != null && mediaSourceId.isNotEmpty) 'MediaSourceId': mediaSourceId,
+    });
+    final started = DateTime.now();
+    try {
+      final response = await _http
+          .post(
+            uri,
+            headers: {...headers, 'Content-Type': 'application/json'},
+            body: jsonEncode({'DeviceProfile': embyDirectPlayProfile()}),
+          )
+          .timeout(const Duration(seconds: 25));
+      NetLog.instance.add(
+        'PlaybackInfo ${response.statusCode} ${DateTime.now().difference(started).inMilliseconds}ms ${NetLog.redact(uri)}',
+      );
+      return _decodeObject(response);
+    } catch (error) {
+      NetLog.instance.add(
+        'PlaybackInfo 失败 ${DateTime.now().difference(started).inMilliseconds}ms $error',
+      );
+      rethrow;
+    }
+  }
+
+  /// One ranged read so the log has the stream's HTTP status without downloading it.
+  Future<void> probeMedia(String url) async {
+    final uri = Uri.parse(url);
+    final started = DateTime.now();
+    final request = http.Request('GET', uri);
+    request.headers.addAll(mediaHeaders);
+    request.headers['Range'] = 'bytes=0-1023';
+    try {
+      final streamed = await _http.send(request).timeout(const Duration(seconds: 12));
+      var bytes = 0;
+      await for (final chunk in streamed.stream) {
+        bytes += chunk.length;
+      }
+      final type = streamed.headers['content-type'] ?? '';
+      NetLog.instance.add(
+        '播放 HTTP ${streamed.statusCode} $type ${bytes}B ${DateTime.now().difference(started).inMilliseconds}ms ${NetLog.redact(uri)}',
+      );
+    } catch (error) {
+      NetLog.instance.add(
+        '播放 HTTP 失败 ${DateTime.now().difference(started).inMilliseconds}ms $error ${NetLog.redact(uri)}',
+      );
+    }
   }
 
   Future<void> reportPlayback({
@@ -329,21 +376,6 @@ class EmbyClient {
       );
       rethrow;
     }
-  }
-
-  Future<Map<String, dynamic>> _postObject(
-    String path,
-    Map<String, String> query,
-    Map<String, dynamic> body,
-  ) async {
-    final response = await _http
-        .post(
-          apiUri(session.apiRoot, path, query),
-          headers: {...headers, 'Content-Type': 'application/json'},
-          body: jsonEncode(body),
-        )
-        .timeout(const Duration(seconds: 25));
-    return _decodeObject(response);
   }
 
   Future<void> _postIgnore(String path, Map<String, dynamic> body) async {

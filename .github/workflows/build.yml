@@ -23,6 +23,11 @@ jobs:
       - run: flutter pub get
       - run: flutter analyze
       - run: flutter test
+      - name: Remux a sample MKV with ffmpeg
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          bash tool/remux_sample.sh
       - run: flutter build apk --release --split-per-abi
       - name: Name release APKs
         run: |

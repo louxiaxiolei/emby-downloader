@@ -2,8 +2,10 @@ import 'package:emby_downloader/downloads/queue.dart';
 import 'package:emby_downloader/downloads/speed.dart';
 import 'package:emby_downloader/emby/models.dart';
 import 'package:emby_downloader/emby/playback.dart';
+import 'package:emby_downloader/emby/playback_guard.dart';
 import 'package:emby_downloader/emby/urls.dart';
 import 'package:emby_downloader/recordings/names.dart';
+import 'package:emby_downloader/recordings/photos_plan.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -246,6 +248,97 @@ void main() {
     expect(
       recordingTitle(EmbyItem(id: '1', name: '第一话', type: 'Episode', seriesName: '一拳超人', parentIndexNumber: 1, indexNumber: 1)),
       '一拳超人',
+    );
+  });
+
+  test('a frame on screen is not a fatal playback error', () {
+    expect(framesAreOnScreen(firstFrame: true, position: Duration.zero), isTrue);
+    expect(framesAreOnScreen(firstFrame: false, position: const Duration(seconds: 2)), isTrue);
+    expect(framesAreOnScreen(firstFrame: false, position: Duration.zero), isFalse);
+    expect(surfacePlaybackError(framesVisible: true), isFalse);
+    expect(surfacePlaybackError(framesVisible: false), isTrue);
+    expect(hardPlaybackFailure('Failed to recognize file format.'), isTrue);
+    expect(hardPlaybackFailure('HTTP error 404 Not Found'), isTrue);
+    expect(hardPlaybackFailure('Can not open audio device.'), isFalse);
+    expect(hardPlaybackFailure('Invalid audio PTS'), isFalse);
+    expect(playbackHeaders({'Accept': 'application/json', 'X-Emby-Token': 't'})['Accept'], isNull);
+  });
+
+  test('direct play falls back to the server stream, then HLS', () {
+    final direct = choosePlaybackFallback(
+      currentUrl: 'http://host/Videos/1/stream?Static=true',
+      triedDirect: false,
+      triedTranscode: false,
+      directUrl: 'http://host/Videos/1/stream.mkv?Static=true&PlaySessionId=s',
+      directLabel: 'DirectPlay',
+      transcodeUrl: 'http://host/emby/videos/1/master.m3u8',
+    );
+    expect(direct?.label, 'DirectPlay');
+    expect(direct?.transcode, isFalse);
+
+    final transcode = choosePlaybackFallback(
+      currentUrl: 'http://host/Videos/1/stream.mkv?Static=true',
+      triedDirect: true,
+      triedTranscode: false,
+      directUrl: 'http://host/Videos/1/stream.mkv?Static=true',
+      transcodeUrl: 'http://host/emby/videos/1/master.m3u8',
+    );
+    expect(transcode?.label, '转码');
+    expect(transcode?.transcode, isTrue);
+    expect(
+      choosePlaybackFallback(
+        currentUrl: 'http://host/emby/videos/1/master.m3u8',
+        triedDirect: true,
+        triedTranscode: true,
+        directUrl: 'http://host/Videos/1/stream.mkv',
+        transcodeUrl: 'http://host/emby/videos/1/master.m3u8',
+      ),
+      isNull,
+    );
+  });
+
+  test('instant playback keeps the container and device id off the json accept header', () {
+    final playback = instantPlayback(
+      apiRoot: 'http://192.168.1.10:8096/emby',
+      accessToken: 'token-1',
+      deviceId: 'phone-1',
+      headers: playbackHeaders({'Accept': 'application/json', 'X-Emby-Token': 'token-1'}),
+      item: EmbyItem(
+        id: 'movie-1',
+        name: '千与千寻',
+        type: 'Movie',
+        mediaSources: const [EmbyMediaSource(id: 'source-1', container: 'mkv')],
+      ),
+    );
+    expect(playback.url, contains('/Videos/movie-1/stream.mkv'));
+    expect(playback.url, contains('Static=true'));
+    expect(playback.url, contains('MediaSourceId=source-1'));
+    expect(playback.url, contains('DeviceId=phone-1'));
+    expect(playback.url, contains('api_key=token-1'));
+    expect(playback.playSessionId, isNull);
+    expect(playback.headers.containsKey('Accept'), isFalse);
+  });
+
+  test('photos save remuxes mkv and transcodes only when the codec needs it', () {
+    expect(
+      planPhotosSave(extension: 'mp4', videoCodec: 'h264', audioCodec: 'aac').kind,
+      PhotosSaveKind.direct,
+    );
+    expect(
+      planPhotosSave(extension: 'mkv', videoCodec: 'hevc', audioCodec: 'aac').kind,
+      PhotosSaveKind.remux,
+    );
+    expect(
+      planPhotosSave(extension: 'mkv', videoCodec: 'h264', audioCodec: 'dts').kind,
+      PhotosSaveKind.transcodeAudio,
+    );
+    expect(
+      planPhotosSave(extension: 'mkv', videoCodec: 'av1', audioCodec: 'aac').kind,
+      PhotosSaveKind.transcodeVideo,
+    );
+    expect(
+      planPhotosSave(extension: 'mkv', videoCodec: '', audioCodec: '').kind,
+      PhotosSaveKind.remux,
     );
   });
 

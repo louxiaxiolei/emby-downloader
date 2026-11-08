@@ -49,6 +49,10 @@
 	<true/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
 	<true/>
+	<key>NSPhotoLibraryAddUsageDescription</key>
+	<string>把录制的视频保存到系统相册</string>
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>把录制的视频保存到系统相册</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
 	<key>NSAppTransportSecurity</key>

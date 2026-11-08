@@ -10,11 +10,14 @@ import 'package:provider/provider.dart';
 
 import '../downloads/speed.dart';
 import '../emby/api.dart';
-import '../recordings/names.dart';
-import '../recordings/store.dart';
 import '../emby/net_log.dart';
 import '../emby/playback.dart';
+import '../emby/playback_guard.dart';
+import '../recordings/names.dart';
+import '../recordings/remux.dart';
+import '../recordings/store.dart';
 import '../session_controller.dart';
+import '../storage/settings_store.dart';
 import '../theme.dart';
 
 class PlayerPage extends StatefulWidget {
@@ -42,7 +45,9 @@ class PlayerPage extends StatefulWidget {
 }
 
 class _PlayerPageState extends State<PlayerPage> {
-  late final Player _player = Player();
+  late final Player _player = Player(
+    configuration: const PlayerConfiguration(bufferSize: 150 * 1024 * 1024),
+  );
   late final VideoController _video = VideoController(_player);
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   Timer? _progressTimer;
@@ -54,15 +59,21 @@ class _PlayerPageState extends State<PlayerPage> {
   var _firstFrame = false;
   int? _openMs;
   int? _infoMs;
-  String? _fallbackUrl;
   String? _playSessionId;
   var _seeking = false;
   var _started = false;
   var _reportedStart = false;
+  var _triedServerDirect = false;
   var _triedTranscode = false;
+  var _fallbackRunning = false;
   var _disposed = false;
   String _method = 'DirectPlay';
+  String _currentUrl = '';
   String? _error;
+  String? _lastMpvError;
+  ResolvedPlayback? _serverPlayback;
+  Future<void>? _infoFuture;
+  Timer? _noFrameWatch;
   String? _resumeNote;
   EmbyClient? _client;
   Duration _position = Duration.zero;
@@ -90,6 +101,7 @@ class _PlayerPageState extends State<PlayerPage> {
       _player.stream.position.listen((position) {
         if (_seeking || !mounted) return;
         setState(() => _position = position);
+        if (!_opening && framesAreOnScreen(firstFrame: _firstFrame, position: position)) _notePicture();
       }),
       _player.stream.duration.listen((duration) {
         if (!mounted) return;
@@ -104,12 +116,13 @@ class _PlayerPageState extends State<PlayerPage> {
         setState(() => _bufferPercent = value);
       }),
       _player.stream.width.listen((width) {
-        if (width == null || width <= 0 || _firstFrame) return;
+        if (_opening || width == null || width <= 0 || _firstFrame) return;
         _firstFrame = true;
         final total = widget.tappedAt == null ? null : DateTime.now().difference(widget.tappedAt!).inMilliseconds;
         NetLog.instance.add(
           '首帧 ${total ?? -1}ms 打开 ${_openMs ?? -1}ms PlaybackInfo ${_infoMs ?? -1}ms',
         );
+        _notePicture();
         if (mounted) setState(() {});
       }),
       _player.stream.tracks.listen((tracks) {
@@ -118,7 +131,7 @@ class _PlayerPageState extends State<PlayerPage> {
       }),
       _player.stream.playing.listen((playing) {
         if (playing) _started = true;
-        if (playing && !_reportedStart) {
+        if (playing && _pictureOnScreen && !_reportedStart) {
           unawaited(_reportStart());
         } else if (_reportedStart) {
           unawaited(_reportProgress(playing ? 'Unpause' : 'Pause', paused: !playing));
@@ -126,16 +139,47 @@ class _PlayerPageState extends State<PlayerPage> {
       }),
       _player.stream.error.listen((message) {
         if (message.isEmpty || _disposed) return;
-        unawaited(_onError(message));
+        unawaited(_onMpvError(message));
       }),
     ]);
-    unawaited(_open(widget.playback.url, transcode: widget.playback.playMethod == 'Transcode'));
-    unawaited(_loadPlaybackInfo());
+    final initialLabel = _networkPlayback ? '直连' : '本地';
+    unawaited(() async {
+      final opened = await _open(
+        widget.playback.url,
+        transcode: widget.playback.playMethod == 'Transcode',
+        label: initialLabel,
+      );
+      if (!opened && !_disposed && !_pictureOnScreen) await _fallback('打开失败');
+    }());
+    if (_networkPlayback && widget.itemId.isNotEmpty) {
+      unawaited(_loadPlaybackInfo());
+      final client = context.read<SessionController>().client;
+      if (client != null) unawaited(client.probeMedia(widget.playback.url));
+    }
   }
 
-  Future<void> _loadPlaybackInfo() async {
-    final client = context.read<SessionController>().client;
-    if (client == null) return;
+  bool get _networkPlayback {
+    final scheme = Uri.tryParse(widget.playback.url)?.scheme;
+    return scheme == 'http' || scheme == 'https';
+  }
+
+  bool get _pictureOnScreen => framesAreOnScreen(firstFrame: _firstFrame, position: _position);
+
+  var _opening = false;
+
+  void _notePicture() {
+    _noFrameWatch?.cancel();
+    if (_error != null && mounted) setState(() => _error = null);
+    if (!_reportedStart && _started) unawaited(_reportStart());
+  }
+
+  Future<void> _loadPlaybackInfo() {
+    return _infoFuture ??= _fetchPlaybackInfo();
+  }
+
+  Future<void> _fetchPlaybackInfo() async {
+    final client = _client ?? context.read<SessionController>().client;
+    if (client == null || widget.itemId.isEmpty) return;
     final watch = Stopwatch()..start();
     try {
       final info = await client.playbackInfo(
@@ -144,7 +188,6 @@ class _PlayerPageState extends State<PlayerPage> {
         startTimeTicks: ticksFor(widget.playback.resume ?? Duration.zero),
       );
       _infoMs = watch.elapsedMilliseconds;
-      NetLog.instance.add('PlaybackInfo ${_infoMs}ms');
       if (!mounted || _disposed) return;
       final resolved = resolvePlayback(
         base: client.session.base,
@@ -152,12 +195,19 @@ class _PlayerPageState extends State<PlayerPage> {
         accessToken: client.session.accessToken,
         itemId: widget.itemId,
         mediaSourceId: widget.playback.mediaSourceId,
+        container: sourceContainer(widget.playback.url) == 'mkv' ? null : sourceContainer(widget.playback.url),
         playbackInfo: info,
-        headers: client.headers,
+        headers: playbackHeaders(client.mediaHeaders),
         resume: widget.playback.resume,
       );
-      _fallbackUrl = resolved.transcodeUrl ?? (resolved.playMethod == 'Transcode' ? resolved.url : null);
+      _serverPlayback = resolved;
       _playSessionId = resolved.playSessionId;
+      final direct = resolved.playMethod == 'Transcode' ? '' : NetLog.redact(Uri.parse(resolved.url));
+      final transcode = resolved.transcodeUrl ?? (resolved.playMethod == 'Transcode' ? resolved.url : null);
+      final transcodeText = transcode == null ? '' : NetLog.redact(Uri.parse(transcode));
+      NetLog.instance.add(
+        'PlaybackInfo ${_infoMs}ms 路径 ${resolved.playMethod} 直连 $direct 转码 $transcodeText',
+      );
     } catch (error) {
       _infoMs = watch.elapsedMilliseconds;
       NetLog.instance.add('PlaybackInfo 失败 ${_infoMs}ms $error');
@@ -170,13 +220,14 @@ class _PlayerPageState extends State<PlayerPage> {
     const options = {
       'hwdec': 'auto',
       'cache': 'yes',
-      'demuxer-readahead-secs': '2',
-      'demuxer-max-bytes': '32MiB',
-      'network-timeout': '20',
-      'demuxer-lavf-probesize': '1048576',
-      'demuxer-lavf-analyzeduration': '1000000',
+      'demuxer-readahead-secs': '20',
+      'demuxer-max-bytes': '150MiB',
+      'demuxer-max-back-bytes': '32MiB',
+      'network-timeout': '60',
+      'stream-record': '',
     };
     for (final entry in options.entries) {
+      if (entry.key == 'stream-record' && _recording) continue;
       try {
         await native.setProperty(entry.key, entry.value);
       } catch (error) {
@@ -185,21 +236,38 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
-  Future<void> _open(String url, {required bool transcode}) async {
-    _method = transcode ? 'Transcode' : widget.playback.playMethod;
+  Future<bool> _open(String url, {required bool transcode, required String label}) async {
+    _method = transcode ? 'Transcode' : (_serverPlayback?.playMethod ?? widget.playback.playMethod);
+    if (!transcode && _method == 'Transcode') _method = 'DirectPlay';
+    _opening = true;
+    _firstFrame = false;
+    _position = Duration.zero;
+    _currentUrl = url;
     final watch = Stopwatch()..start();
+    final redacted = NetLog.redact(Uri.parse(url));
+    NetLog.instance.add('播放尝试 $label $redacted');
+    _noFrameWatch?.cancel();
+    _noFrameWatch = Timer(const Duration(seconds: 8), () {
+      if (_disposed || _pictureOnScreen) return;
+      if (_networkPlayback) {
+        unawaited(_fallback(_lastMpvError ?? '8秒没有画面'));
+      } else {
+        _showFatal(_lastMpvError ?? '8秒没有画面');
+      }
+    });
     try {
       await _tune();
+      _opening = false;
       await _player.open(
         Media(
           url,
-          httpHeaders: widget.playback.headers,
+          httpHeaders: playbackHeaders(widget.playback.headers),
           start: widget.playback.resume,
         ),
       );
       _openMs = watch.elapsedMilliseconds;
-      NetLog.instance.add('打开播放器 ${_openMs}ms ${transcode ? '转码' : '直连'}');
-      if (_disposed) return;
+      NetLog.instance.add('打开播放器 ${_openMs}ms $label');
+      if (_disposed) return false;
       final resume = widget.playback.resume;
       if (resume != null && resume > Duration.zero && mounted) {
         setState(() => _resumeNote = '从 ${formatClock(resume)} 继续');
@@ -218,26 +286,91 @@ class _PlayerPageState extends State<PlayerPage> {
       _progressTimer = Timer.periodic(const Duration(seconds: 10), (_) {
         unawaited(_reportProgress('TimeUpdate', paused: !_player.state.playing));
       });
+      return true;
     } catch (error) {
-      if (mounted) setState(() => _error = '无法播放');
+      _opening = false;
+      NetLog.instance.add('打开播放器失败 $label $error');
+      _lastMpvError = '$error';
+      return false;
     }
   }
 
-  Future<void> _onError(String message) async {
-    final fallback = _fallbackUrl ?? widget.playback.transcodeUrl;
-    if (!_started && !_triedTranscode && fallback != null && _method != 'Transcode') {
-      _triedTranscode = true;
-      if (mounted) {
-        setState(() {
-          _error = null;
-          _buffering = true;
-        });
-      }
-      await _open(fallback, transcode: true);
+  Future<void> _onMpvError(String message) async {
+    _lastMpvError = message;
+    NetLog.instance.add('mpv 错误 $message');
+    if (_pictureOnScreen) {
+      NetLog.instance.add('画面播放中，忽略该错误');
+      _notePicture();
       return;
     }
-    if (!mounted || _disposed) return;
-    setState(() => _error = '无法播放');
+    if (hardPlaybackFailure(message)) {
+      await _fallback(message);
+    }
+  }
+
+  Future<void> _fallback(String reason) async {
+    if (_disposed || _pictureOnScreen || _fallbackRunning) return;
+    if (!surfacePlaybackError(framesVisible: _pictureOnScreen)) return;
+    if (!_networkPlayback) {
+      _showFatal(reason);
+      return;
+    }
+    _fallbackRunning = true;
+    try {
+      await _loadPlaybackInfo();
+      while (!_disposed && !_pictureOnScreen) {
+        final server = _serverPlayback;
+        final transcode = server == null
+            ? widget.playback.transcodeUrl
+            : server.transcodeUrl ?? (server.playMethod == 'Transcode' ? server.url : null);
+        final next = choosePlaybackFallback(
+          currentUrl: _currentUrl,
+          triedDirect: _triedServerDirect,
+          triedTranscode: _triedTranscode,
+          directUrl: server != null && server.playMethod != 'Transcode' ? server.url : null,
+          directLabel: server?.playMethod ?? 'DirectStream',
+          transcodeUrl: transcode,
+        );
+        if (next == null) {
+          _showFatal(_lastMpvError ?? reason);
+          return;
+        }
+        if (next.transcode) {
+          _triedTranscode = true;
+        } else {
+          _triedServerDirect = true;
+        }
+        _playSessionId = server?.playSessionId ?? _playSessionId;
+        NetLog.instance.add('回退 ${next.label}，原因 $reason');
+        final opened = await _open(next.url, transcode: next.transcode, label: next.label);
+        if (_disposed || _pictureOnScreen || opened) return;
+      }
+    } finally {
+      _fallbackRunning = false;
+    }
+  }
+
+  void _showFatal(String message) {
+    if (_disposed || _pictureOnScreen || !mounted) return;
+    final text = message.trim().isEmpty ? '没有画面' : message.trim();
+    NetLog.instance.add('播放失败 $text');
+    setState(() => _error = text);
+  }
+
+  Future<void> _retry() async {
+    _triedServerDirect = false;
+    _triedTranscode = false;
+    _lastMpvError = null;
+    _noFrameWatch?.cancel();
+    if (mounted) {
+      setState(() {
+        _error = null;
+        _buffering = true;
+        _firstFrame = false;
+      });
+    }
+    final opened = await _open(widget.playback.url, transcode: false, label: '重试直连');
+    if (!opened && !_disposed && !_pictureOnScreen) await _fallback('重试失败');
   }
 
   Future<void> _reportStart() async {
@@ -384,12 +517,26 @@ class _PlayerPageState extends State<PlayerPage> {
       }
       await file.rename(dest);
       NetLog.instance.add('停止录制 $dest');
-      _tell('已保存 $name');
+      dest = await finalizeRecordingContainer(dest);
+      final autoSave = mounted && context.read<SettingsStore>().saveRecordingsToPhotos;
+      _tell('已保存 ${p.basename(dest)}');
+      if (autoSave) unawaited(_saveToPhotos(dest));
     } catch (error) {
       NetLog.instance.add('停止录制失败 $error');
       _tell('停止录制失败');
     } finally {
       _recordPath = null;
+    }
+  }
+
+  Future<void> _saveToPhotos(String path) async {
+    _tell('正在保存到相册');
+    try {
+      final message = await saveRecordingToPhotos(path);
+      _tell(message);
+    } catch (error) {
+      NetLog.instance.add('保存到相册失败 $error');
+      _tell('保存到相册失败');
     }
   }
 
@@ -404,6 +551,7 @@ class _PlayerPageState extends State<PlayerPage> {
     _progressTimer?.cancel();
     _chromeTimer?.cancel();
     _recordTimer?.cancel();
+    _noFrameWatch?.cancel();
     if (_recording && _recordPath != null) {
       final native = _player.platform;
       final temp = _recordPath!;
@@ -419,7 +567,9 @@ class _PlayerPageState extends State<PlayerPage> {
           final file = File(temp);
           if (await file.exists() && await file.length() > 0) {
             final name = recordingFileName(title: title, episode: episode, start: start, end: end, extension: ext);
-            await file.rename(p.join(p.dirname(temp), name));
+            final renamed = p.join(p.dirname(temp), name);
+            await file.rename(renamed);
+            await finalizeRecordingContainer(renamed);
             NetLog.instance.add('离开播放器时保存录制 $name');
           }
         } catch (error) {
@@ -492,7 +642,18 @@ class _PlayerPageState extends State<PlayerPage> {
               Center(
                 child: Padding(
                   padding: const EdgeInsets.all(24),
-                  child: Text(_error!, style: const TextStyle(color: ivory)),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        _error!,
+                        textAlign: TextAlign.center,
+                        style: const TextStyle(color: ivory),
+                      ),
+                      const SizedBox(height: 12),
+                      TextButton(onPressed: _retry, child: const Text('重试', style: TextStyle(color: brass))),
+                    ],
+                  ),
                 ),
               ),
             if (_showChrome) ...[

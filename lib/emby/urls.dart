@@ -111,6 +111,7 @@ Uri staticStreamUri({
   required String mediaSourceId,
   String? container,
   String? playSessionId,
+  String? deviceId,
 }) {
   final extension = cleanContainer(container);
   final file = extension == null ? 'stream' : 'stream.$extension';
@@ -120,6 +121,7 @@ Uri staticStreamUri({
     'api_key': accessToken,
     if (playSessionId != null && playSessionId.isNotEmpty)
       'PlaySessionId': playSessionId,
+    if (deviceId != null && deviceId.isNotEmpty) 'DeviceId': deviceId,
   });
 }
 

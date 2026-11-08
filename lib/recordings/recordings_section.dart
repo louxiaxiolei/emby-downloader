@@ -6,6 +6,7 @@ import '../emby/playback.dart';
 import '../emby/urls.dart';
 import '../theme.dart';
 import '../ui/player_page.dart';
+import 'remux.dart';
 import 'store.dart';
 
 class RecordingsSection extends StatefulWidget {
@@ -62,6 +63,18 @@ class _RecordingsSectionState extends State<RecordingsSection> {
     );
   }
 
+  Future<void> _save(RecordingFile file) async {
+    final messenger = ScaffoldMessenger.of(context);
+    messenger.showSnackBar(const SnackBar(content: Text('正在保存到相册')));
+    try {
+      final message = await saveRecordingToPhotos(file.path);
+      messenger.showSnackBar(SnackBar(content: Text(message)));
+    } catch (error) {
+      NetLog.instance.add('保存到相册失败 $error');
+      messenger.showSnackBar(const SnackBar(content: Text('保存到相册失败')));
+    }
+  }
+
   Widget _tile(BuildContext context, RecordingFile file) {
     final cinema = context.cinema;
     return Card(
@@ -92,7 +105,14 @@ class _RecordingsSectionState extends State<RecordingsSection> {
           mainAxisSize: MainAxisSize.min,
           children: [
             IconButton(
-              tooltip: file.canOfferPhotos ? '分享，可保存到照片' : '分享到文件',
+              tooltip: '保存到相册',
+              visualDensity: VisualDensity.compact,
+              onPressed: () => _save(file),
+              icon: const Icon(Icons.photo_library_outlined),
+            ),
+            IconButton(
+              tooltip: '分享',
+              visualDensity: VisualDensity.compact,
               onPressed: () async {
                 try {
                   await Share.shareXFiles([XFile(file.path, name: file.name)]);
@@ -105,6 +125,7 @@ class _RecordingsSectionState extends State<RecordingsSection> {
             ),
             IconButton(
               tooltip: '删除',
+              visualDensity: VisualDensity.compact,
               onPressed: () async {
                 await deleteRecording(file.path);
                 NetLog.instance.add('删除录制 ${file.name}');
