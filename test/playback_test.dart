@@ -3,6 +3,7 @@ import 'package:emby_downloader/downloads/speed.dart';
 import 'package:emby_downloader/emby/models.dart';
 import 'package:emby_downloader/emby/playback.dart';
 import 'package:emby_downloader/emby/urls.dart';
+import 'package:emby_downloader/recordings/names.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -227,6 +228,25 @@ void main() {
     );
     expect(wide.first, contains('/Items/series/Images/Primary'));
     expect(wide.first, contains('tag=sp'));
+  });
+
+  test('recording names keep the source container and a time range', () {
+    expect(
+      recordingFileName(
+        title: '一拳超人',
+        episode: 'S01E01',
+        start: const Duration(minutes: 12, seconds: 34),
+        end: const Duration(minutes: 13, seconds: 10),
+        extension: 'mkv',
+      ),
+      '《一拳超人》S01E01_00-12-34_00-13-10.mkv',
+    );
+    expect(sourceContainer('http://host/Videos/1/stream.mp4?Static=true'), 'mp4');
+    expect(sourceContainer('http://host/Videos/1/stream?Static=true'), 'mkv');
+    expect(
+      recordingTitle(EmbyItem(id: '1', name: '第一话', type: 'Episode', seriesName: '一拳超人', parentIndexNumber: 1, indexNumber: 1)),
+      '一拳超人',
+    );
   });
 
   test('device profile asks for the original and offers HLS', () {

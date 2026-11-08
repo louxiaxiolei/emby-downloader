@@ -1,6 +1,8 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -8,6 +10,8 @@ import 'package:provider/provider.dart';
 
 import '../downloads/speed.dart';
 import '../emby/api.dart';
+import '../recordings/names.dart';
+import '../recordings/store.dart';
 import '../emby/net_log.dart';
 import '../emby/playback.dart';
 import '../session_controller.dart';
@@ -20,12 +24,18 @@ class PlayerPage extends StatefulWidget {
     required this.itemId,
     required this.playback,
     this.tappedAt,
+    this.recordTitle,
+    this.recordEpisode,
   });
 
   final String title;
   final String itemId;
   final ResolvedPlayback playback;
   final DateTime? tappedAt;
+
+  /// Base name inside 《》 for a recording, without the time range.
+  final String? recordTitle;
+  final String? recordEpisode;
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -58,6 +68,13 @@ class _PlayerPageState extends State<PlayerPage> {
   Duration _position = Duration.zero;
   Duration _duration = Duration.zero;
   Tracks _tracks = const Tracks();
+  var _recording = false;
+  String? _recordPath;
+  String _recordExt = 'mkv';
+  Duration _recordStart = Duration.zero;
+  DateTime? _recordWall;
+  Duration _recordElapsed = Duration.zero;
+  Timer? _recordTimer;
 
   @override
   void didChangeDependencies() {
@@ -292,11 +309,124 @@ class _PlayerPageState extends State<PlayerPage> {
     }
   }
 
+  Future<void> _toggleRecord() async {
+    if (_recording) {
+      await _stopRecording();
+    } else {
+      await _startRecording();
+    }
+  }
+
+  Future<void> _startRecording() async {
+    final native = _player.platform;
+    if (native is! NativePlayer) {
+      NetLog.instance.add('开始录制失败 没有 mpv');
+      _tell('无法录制');
+      return;
+    }
+    try {
+      final directory = await recordingsDirectory();
+      final ext = sourceContainer(widget.playback.url);
+      final temp = p.join(directory.path, '.recording-${DateTime.now().millisecondsSinceEpoch}.$ext');
+      await native.setProperty('stream-record', temp);
+      _recordPath = temp;
+      _recordExt = ext;
+      _recordStart = _position;
+      _recordWall = DateTime.now();
+      _recordElapsed = Duration.zero;
+      _recordTimer?.cancel();
+      _recordTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+        final start = _recordWall;
+        if (!mounted || start == null) return;
+        setState(() => _recordElapsed = DateTime.now().difference(start));
+      });
+      NetLog.instance.add('开始录制 $temp 从 ${formatClock(_position)}');
+      if (mounted) setState(() => _recording = true);
+    } catch (error) {
+      NetLog.instance.add('开始录制失败 $error');
+      _tell('无法开始录制');
+    }
+  }
+
+  Future<void> _stopRecording() async {
+    if (!_recording && _recordPath == null) return;
+    _recordTimer?.cancel();
+    final temp = _recordPath;
+    final start = _recordStart;
+    final end = _position;
+    final ext = _recordExt;
+    if (mounted) setState(() => _recording = false);
+    try {
+      final native = _player.platform;
+      if (native is NativePlayer) {
+        await native.setProperty('stream-record', '');
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      if (temp == null) return;
+      final file = File(temp);
+      if (!await file.exists() || await file.length() <= 0) {
+        NetLog.instance.add('停止录制失败 没有写出文件');
+        _tell('录制文件是空的');
+        if (await file.exists()) await file.delete();
+        return;
+      }
+      final directory = p.dirname(temp);
+      final name = recordingFileName(
+        title: widget.recordTitle ?? widget.title,
+        episode: widget.recordEpisode,
+        start: start,
+        end: end,
+        extension: ext,
+      );
+      var dest = p.join(directory, name);
+      if (await File(dest).exists()) {
+        dest = p.join(directory, '${p.basenameWithoutExtension(name)}-${DateTime.now().millisecondsSinceEpoch}.$ext');
+      }
+      await file.rename(dest);
+      NetLog.instance.add('停止录制 $dest');
+      _tell('已保存 $name');
+    } catch (error) {
+      NetLog.instance.add('停止录制失败 $error');
+      _tell('停止录制失败');
+    } finally {
+      _recordPath = null;
+    }
+  }
+
+  void _tell(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   @override
   void dispose() {
     _disposed = true;
     _progressTimer?.cancel();
     _chromeTimer?.cancel();
+    _recordTimer?.cancel();
+    if (_recording && _recordPath != null) {
+      final native = _player.platform;
+      final temp = _recordPath!;
+      final start = _recordStart;
+      final end = _position;
+      final ext = _recordExt;
+      final title = widget.recordTitle ?? widget.title;
+      final episode = widget.recordEpisode;
+      unawaited(() async {
+        try {
+          if (native is NativePlayer) await native.setProperty('stream-record', '');
+          await Future<void>.delayed(const Duration(milliseconds: 250));
+          final file = File(temp);
+          if (await file.exists() && await file.length() > 0) {
+            final name = recordingFileName(title: title, episode: episode, start: start, end: end, extension: ext);
+            await file.rename(p.join(p.dirname(temp), name));
+            NetLog.instance.add('离开播放器时保存录制 $name');
+          }
+        } catch (error) {
+          NetLog.instance.add('离开播放器时停止录制失败 $error');
+        }
+      }());
+    }
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
@@ -326,6 +456,24 @@ class _PlayerPageState extends State<PlayerPage> {
                 wakelock: true,
               ),
             ),
+            if (_recording)
+              Positioned(
+                top: 8,
+                right: 12,
+                child: SafeArea(
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: const Color(0xCC1A0000),
+                      borderRadius: BorderRadius.circular(20),
+                    ),
+                    child: Text(
+                      '● ${formatClock(_recordElapsed)}',
+                      style: const TextStyle(color: Color(0xFFFF4D4D), fontWeight: FontWeight.w800),
+                    ),
+                  ),
+                ),
+              ),
             if (_buffering && _error == null)
               Center(
                 child: Column(
@@ -427,6 +575,14 @@ class _PlayerPageState extends State<PlayerPage> {
                       Row(
                         mainAxisAlignment: MainAxisAlignment.end,
                         children: [
+                          IconButton(
+                            tooltip: _recording ? '停止录制' : '录制',
+                            onPressed: _toggleRecord,
+                            icon: Icon(
+                              _recording ? Icons.stop_circle : Icons.fiber_manual_record,
+                              color: _recording ? const Color(0xFFFF4D4D) : ivory,
+                            ),
+                          ),
                           _audioMenu(),
                           _subtitleMenu(),
                           IconButton(

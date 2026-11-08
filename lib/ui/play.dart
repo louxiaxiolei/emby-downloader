@@ -5,6 +5,7 @@ import '../emby/models.dart';
 import '../emby/net_log.dart';
 import '../emby/playback.dart';
 import '../emby/urls.dart';
+import '../recordings/names.dart';
 import '../session_controller.dart';
 import 'player_page.dart';
 
@@ -29,6 +30,8 @@ Future<void> playItem(BuildContext context, EmbyItem item) {
         itemId: item.id,
         playback: playback,
         tappedAt: tappedAt,
+        recordTitle: recordingTitle(item),
+        recordEpisode: episodeCode(item),
       ),
     ),
   );

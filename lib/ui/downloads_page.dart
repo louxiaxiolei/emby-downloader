@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../downloads/download_service.dart';
+import '../recordings/recordings_section.dart';
 import '../downloads/speed.dart';
 import '../emby/models.dart';
 import '../emby/playback.dart';
@@ -68,6 +69,8 @@ class DownloadsPage extends StatelessWidget {
             Text('队列是空的', style: TextStyle(color: cinema.muted))
           else
             ...downloads.live.map((item) => _LiveCard(item: item)),
+          const SizedBox(height: 18),
+          const RecordingsSection(),
           const SizedBox(height: 18),
           Text('已保存', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cinema.text)),
           const SizedBox(height: 8),
