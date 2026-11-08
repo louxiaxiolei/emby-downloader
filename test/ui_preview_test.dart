@@ -17,9 +17,12 @@ void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
   testWidgets('save light home and detail previews', (tester) async {
-    final font = File('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc').readAsBytesSync();
-    final loader = FontLoader('WenQuanYi')..addFont(Future.value(ByteData.view(font.buffer)));
-    await loader.load();
+    final fontFile = File('/usr/share/fonts/truetype/wqy/wqy-microhei.ttc');
+    if (fontFile.existsSync()) {
+      final loader = FontLoader('WenQuanYi')
+        ..addFont(Future.value(ByteData.view(fontFile.readAsBytesSync().buffer)));
+      await loader.load();
+    }
     await tester.binding.setSurfaceSize(const Size(390, 844));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final hero = _movie(
@@ -149,6 +152,7 @@ EmbyItem _movie({
 }
 
 Future<void> _save(WidgetTester tester, String path) async {
+  if (!Directory('/opt/cursor/artifacts').existsSync()) return;
   await tester.runAsync(() async {
     final boundary = tester.renderObject<RenderRepaintBoundary>(find.byType(RepaintBoundary).first);
     final image = await boundary.toImage(pixelRatio: 1.5);
