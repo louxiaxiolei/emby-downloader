@@ -92,26 +92,39 @@ def main() -> int:
                     connection.setReadTimeout(180000)
                     connection.inputStream.withCloseable { input -> os << input }
                 }"""
+    vendored = """def vendored = new File(rootProject.projectDir, "../third_party/libmpv/${destFile.name}")
+            if (!destFile.exists() && vendored.exists()) {
+                destFile.parentFile.mkdirs()
+                java.nio.file.Files.copy(vendored.toPath(), destFile.toPath())
+                println "Using vendored ${vendored}"
+            }
+            """
     for gradle in gradle_files:
         text = gradle.read_text()
-        changed = False
+        original = text
         for name, asset_id in ANDROID_ASSETS.items():
             api = f"https://api.github.com/repos/media-kit/libmpv-android-video-build/releases/assets/{asset_id}"
             release = f"https://github.com/media-kit/libmpv-android-video-build/releases/download/v1.1.7/{name}"
             if release in text:
                 text = text.replace(release, api)
-                changed = True
         if old_download in text:
             text = text.replace(old_download, new_download)
-            changed = True
-        if changed:
-            gradle.write_text(text)
-            print(f"patched {gradle}")
-        elif "releases/assets/300465119" in text:
-            print(f"android download already uses the GitHub API {gradle}")
-        else:
+        if "third_party/libmpv" not in text and "if (!destFile.exists())" in text:
+            text = text.replace("if (!destFile.exists())", vendored + "if (!destFile.exists())", 1)
+        kept = []
+        for line in text.splitlines(keepends=True):
+            if "default-x86" in line:
+                continue
+            kept.append(line)
+        text = "".join(kept)
+        if "default-arm64-v8a.jar" not in text or "third_party/libmpv" not in text:
             print(f"unexpected android download script {gradle}", file=sys.stderr)
             return 1
+        if text != original:
+            gradle.write_text(text)
+            print(f"patched {gradle}")
+        else:
+            print(f"android download already vendored {gradle}")
     return 0
 
 

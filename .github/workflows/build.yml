@@ -59,7 +59,7 @@ jobs:
           set -euo pipefail
           # services.gradle.org redirects to a GitHub release that is returning 503/504.
           python3 tool/use_gradle_mirror.py
-          flutter build apk --release --split-per-abi
+          flutter build apk --release --split-per-abi --target-platform android-arm,android-arm64
       - name: Name release APKs
         run: |
           mkdir -p artifacts
