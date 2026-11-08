@@ -57,11 +57,8 @@ jobs:
       - name: Build split APKs
         run: |
           set -euo pipefail
-          # services.gradle.org redirects to a GitHub release that has been returning 504.
-          if ! curl -fsI --retry 2 --max-time 20 "https://github.com/gradle/gradle-distributions/releases/download/v8.12.0/gradle-8.12-all.zip" >/dev/null; then
-            echo "GitHub Gradle release is unavailable; using a mirror"
-            python3 tool/use_gradle_mirror.py
-          fi
+          # services.gradle.org redirects to a GitHub release that is returning 503/504.
+          python3 tool/use_gradle_mirror.py
           flutter build apk --release --split-per-abi
       - name: Name release APKs
         run: |
