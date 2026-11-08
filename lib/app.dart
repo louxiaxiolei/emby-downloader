@@ -29,10 +29,14 @@ class EmbyApp extends StatelessWidget {
         ChangeNotifierProvider<DownloadService>.value(value: downloads),
         ChangeNotifierProvider<SettingsStore>.value(value: settings),
       ],
-      child: MaterialApp(
+      child: Builder(
+        builder: (context) {
+          return MaterialApp(
         title: 'Emby 下载',
         debugShowCheckedModeBanner: false,
-        theme: buildTheme(),
+        theme: buildTheme(Brightness.light),
+        darkTheme: buildTheme(Brightness.dark),
+        themeMode: context.watch<SettingsStore>().themeMode,
         locale: const Locale('zh', 'CN'),
         supportedLocales: const [Locale('zh', 'CN')],
         localizationsDelegates: const [
@@ -41,6 +45,8 @@ class EmbyApp extends StatelessWidget {
           GlobalCupertinoLocalizations.delegate,
         ],
         home: const _Gate(),
+      );
+        },
       ),
     );
   }

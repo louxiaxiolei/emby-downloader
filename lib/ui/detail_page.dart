@@ -1,4 +1,3 @@
-import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
@@ -9,8 +8,9 @@ import '../emby/playback.dart';
 import '../emby/urls.dart';
 import '../session_controller.dart';
 import '../theme.dart';
+import 'chrome.dart';
+import 'home_page.dart';
 import 'player_page.dart';
-import 'season_page.dart';
 import 'widgets.dart';
 
 class DetailPage extends StatefulWidget {
@@ -26,6 +26,9 @@ class DetailPage extends StatefulWidget {
 class _DetailPageState extends State<DetailPage> {
   EmbyItem? _item;
   List<EmbyItem> _seasons = const [];
+  List<EmbyItem> _episodes = const [];
+  List<EmbyItem> _similar = const [];
+  var _seasonIndex = 0;
   var _loading = true;
   String? _error;
   var _sourceIndex = 0;
@@ -43,18 +46,21 @@ class _DetailPageState extends State<DetailPage> {
     final client = context.read<SessionController>().client;
     if (client == null) return;
     setState(() {
-      _loading = true;
+      _loading = _item == null;
       _error = null;
     });
     try {
       final item = await client.item(widget.itemId);
       final seasons = item.type == 'Series' ? await client.seasons(item.id) : null;
+      final similar = await _quiet(() => client.similar(item.id));
       if (!mounted) return;
       setState(() {
         _item = item;
         _seasons = seasons?.items ?? const [];
+        _similar = similar;
         _loading = false;
       });
+      if (_seasons.isNotEmpty) await _loadEpisodes(0);
     } on EmbyUnauthorized {
       if (!mounted) return;
       await context.read<SessionController>().invalidate();
@@ -65,6 +71,28 @@ class _DetailPageState extends State<DetailPage> {
         _error = friendlyError(error);
         _loading = false;
       });
+    }
+  }
+
+  Future<List<EmbyItem>> _quiet(Future<List<EmbyItem>> Function() load) async {
+    try {
+      return await load();
+    } catch (_) {
+      return const [];
+    }
+  }
+
+  Future<void> _loadEpisodes(int index) async {
+    final client = context.read<SessionController>().client;
+    final item = _item;
+    if (client == null || item == null || index >= _seasons.length) return;
+    setState(() => _seasonIndex = index);
+    try {
+      final page = await client.episodes(seriesId: item.id, seasonId: _seasons[index].id);
+      if (!mounted) return;
+      setState(() => _episodes = page.items);
+    } catch (_) {
+      if (mounted) setState(() => _episodes = const []);
     }
   }
 
@@ -143,183 +171,225 @@ class _DetailPageState extends State<DetailPage> {
   Widget build(BuildContext context) {
     final client = context.watch<SessionController>().client;
     final item = _item;
+    final cinema = context.cinema;
+    if (_loading && item == null) return const Scaffold(body: Center(child: CircularProgressIndicator()));
+    if (_error != null && item == null) {
+      return Scaffold(body: LoadError(message: _error!, onRetry: _load));
+    }
+    if (item == null) return const Scaffold(body: EmptyHint(message: '找不到这个条目'));
+    final backdrop = client?.imageUrl(item, type: 'Backdrop', maxWidth: 1280) ?? '';
+    final logo = client?.imageUrl(item, type: 'Logo', maxWidth: 800) ?? '';
+    final resume = resumePosition(item.playbackPositionTicks, item.runTimeTicks);
     return Scaffold(
-      body: _loading && item == null
-          ? const Center(child: CircularProgressIndicator())
-          : _error != null && item == null
-          ? LoadError(message: _error!, onRetry: _load)
-          : item == null
-          ? const EmptyHint(message: '找不到这个条目')
-          : CustomScrollView(
-              slivers: [
-                SliverAppBar(
-                  expandedHeight: 220,
-                  pinned: true,
-                  flexibleSpace: FlexibleSpaceBar(
-                    title: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-                    background: _backdrop(client, item),
+      body: CustomScrollView(
+        slivers: [
+          SliverAppBar(
+            expandedHeight: 420,
+            pinned: true,
+            backgroundColor: cinema.background,
+            leading: Padding(
+              padding: const EdgeInsets.only(left: 8),
+              child: GlassButton(icon: Icons.arrow_back, onPressed: () => Navigator.of(context).maybePop()),
+            ),
+            flexibleSpace: FlexibleSpaceBar(
+              background: Stack(
+                fit: StackFit.expand,
+                children: [
+                  EmbyImage(url: backdrop.isEmpty ? (client?.imageUrl(item, maxWidth: 800) ?? '') : backdrop, headers: client?.headers ?? const {}),
+                  const DecoratedBox(
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0x33000000), Color(0x00000000), Color(0xEE101114)],
+                      ),
+                    ),
                   ),
-                ),
-                SliverToBoxAdapter(
-                  child: Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(24, 0, 24, 20),
                     child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisAlignment: MainAxisAlignment.end,
                       children: [
-                        _meta(item),
-                        if ((item.overview ?? '').isNotEmpty) ...[
-                          const SizedBox(height: 14),
-                          Text(item.overview!, style: const TextStyle(height: 1.5, color: ivory)),
-                        ],
-                        if (item.type == 'Series') ...[
-                          const SizedBox(height: 22),
-                          const Text('季', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w700)),
-                          const SizedBox(height: 8),
-                          if (_seasons.isEmpty)
-                            const Text('没有季信息', style: TextStyle(color: muted))
-                          else
-                            ..._seasons.map((season) => _seasonTile(item, season, client)),
-                        ] else if (item.canDownload) ...[
-                          const SizedBox(height: 18),
-                          _sourcePicker(item),
-                          const SizedBox(height: 12),
-                          _subtitleList(item),
-                          const SizedBox(height: 16),
-                          FilledButton.icon(
-                            onPressed: _playing ? null : () => _play(item),
-                            icon: _playing
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.play_arrow),
-                            label: const Text('播放'),
+                        if (logo.isNotEmpty)
+                          SizedBox(height: 72, child: EmbyImage(url: logo, headers: client?.headers ?? const {}, fit: BoxFit.contain))
+                        else
+                          Text(
+                            item.name,
+                            textAlign: TextAlign.center,
+                            style: const TextStyle(color: Colors.white, fontSize: 34, fontWeight: FontWeight.w200, letterSpacing: 2),
                           ),
-                          const SizedBox(height: 8),
-                          OutlinedButton.icon(
-                            onPressed: _downloading ? null : () => _download(item),
-                            icon: _downloading
-                                ? const SizedBox(
-                                    width: 18,
-                                    height: 18,
-                                    child: CircularProgressIndicator(strokeWidth: 2),
-                                  )
-                                : const Icon(Icons.download),
-                            label: const Text('下载原始文件'),
-                          ),
-                        ],
+                        const SizedBox(height: 8),
+                        Text(_meta(item), textAlign: TextAlign.center, style: const TextStyle(color: Colors.white70)),
+                        const SizedBox(height: 8),
+                        RatingRow(item: item, onDark: true),
                       ],
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
+          ),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(18, 8, 18, 32),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  if ((item.overview ?? '').isNotEmpty)
+                    Text(item.overview!, style: TextStyle(height: 1.5, color: cinema.text)),
+                  const SizedBox(height: 16),
+                  if (item.canDownload) ...[
+                    FilledButton.icon(
+                      onPressed: _playing ? null : () => _play(item),
+                      icon: _playing
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.play_arrow_rounded),
+                      label: Text(resume == null ? '播放' : '继续播放'),
+                    ),
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: _downloading ? null : () => _download(item),
+                      icon: _downloading
+                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
+                          : const Icon(Icons.download_rounded),
+                      label: const Text('下载'),
+                    ),
+                    const SizedBox(height: 12),
+                    _sourceLine(item),
+                  ],
+                  if (_seasons.isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    SizedBox(
+                      height: 40,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _seasons.length,
+                        separatorBuilder: (context, index) => const SizedBox(width: 8),
+                        itemBuilder: (context, index) {
+                          final selected = index == _seasonIndex;
+                          return ChoiceChip(
+                            label: Text(_seasons[index].name),
+                            selected: selected,
+                            onSelected: (_) => _loadEpisodes(index),
+                          );
+                        },
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    for (final episode in _episodes) _episode(episode, client),
+                  ],
+                  if (item.people.where((person) => person.type == 'Actor').isNotEmpty) ...[
+                    const SizedBox(height: 18),
+                    Text('演职员', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cinema.text)),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      height: 110,
+                      child: ListView(
+                        scrollDirection: Axis.horizontal,
+                        children: [
+                          for (final person in item.people.where((person) => person.type == 'Actor').take(16))
+                            Padding(
+                              padding: const EdgeInsets.only(right: 12),
+                              child: SizedBox(
+                                width: 72,
+                                child: Column(
+                                  children: [
+                                    ClipOval(
+                                      child: SizedBox(
+                                        width: 64,
+                                        height: 64,
+                                        child: EmbyImage(
+                                          url: client?.personImageUrl(person) ?? '',
+                                          headers: client?.headers ?? const {},
+                                        ),
+                                      ),
+                                    ),
+                                    const SizedBox(height: 6),
+                                    Text(person.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                                    Text(
+                                      person.role ?? '',
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: TextStyle(fontSize: 11, color: cinema.muted),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                  if (_similar.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text('相似内容', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cinema.text)),
+                    const SizedBox(height: 10),
+                    SizedBox(
+                      height: 180,
+                      child: ListView.separated(
+                        scrollDirection: Axis.horizontal,
+                        itemCount: _similar.length,
+                        separatorBuilder: (context, index) => const SizedBox(width: 10),
+                        itemBuilder: (context, index) {
+                          final other = _similar[index];
+                          return GestureDetector(
+                            onTap: () {
+                              Navigator.of(context).push(
+                                MaterialPageRoute<void>(builder: (_) => DetailPage(itemId: other.id, hint: other)),
+                              );
+                            },
+                            child: SizedBox(
+                              width: 110,
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Expanded(
+                                    child: ClipRRect(
+                                      borderRadius: BorderRadius.circular(12),
+                                      child: EmbyImage(
+                                        url: client?.imageUrl(other, maxWidth: 300) ?? '',
+                                        headers: client?.headers ?? const {},
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 6),
+                                  Text(other.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
-  Widget _backdrop(client, EmbyItem item) {
-    final url = client?.imageUrl(item, type: 'Backdrop', maxWidth: 1280) ?? '';
-    final fallback = url.isEmpty ? (client?.imageUrl(item, maxHeight: 600) ?? '') : url;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        if (fallback.isNotEmpty)
-          CachedNetworkImage(
-            imageUrl: fallback,
-            httpHeaders: client?.headers ?? const {},
-            fit: BoxFit.cover,
-            errorWidget: (context, url, error) => const ColoredBox(color: panel),
-          )
-        else
-          const ColoredBox(color: panel),
-        const DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0x66000000), ink],
-            ),
-          ),
-        ),
-      ],
-    );
+  String _meta(EmbyItem item) {
+    final places = item.productionLocations.take(2).join('/');
+    final genres = item.genres.take(3).join(' ');
+    final date = (item.premiereDate ?? item.productionYear?.toString() ?? '').split('T').first;
+    return [places, genres, date, formatRuntime(item.runTimeTicks)].where((part) => part.isNotEmpty).join(' · ');
   }
 
-  Widget _meta(EmbyItem item) {
-    final bits = <String>[
-      if (item.productionYear != null) '${item.productionYear}',
-      if (formatRuntime(item.runTimeTicks).isNotEmpty) formatRuntime(item.runTimeTicks),
-      if (item.officialRating != null) item.officialRating!,
-      if (item.communityRating != null) '评分 ${item.communityRating!.toStringAsFixed(1)}',
-      if (episodeCode(item) != null) episodeCode(item)!,
-    ];
-    final directors = item.people.where((person) => person.type == 'Director').map((person) => person.name);
-    final actors = item.people.where((person) => person.type == 'Actor').take(4).map((person) => person.name);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        if (item.seriesName != null)
-          Text(item.seriesName!, style: const TextStyle(color: brass, fontWeight: FontWeight.w700)),
-        if (bits.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 6),
-            child: Text(bits.join('  ·  '), style: const TextStyle(color: muted)),
-          ),
-        if (item.genres.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Wrap(
-              spacing: 6,
-              runSpacing: 6,
-              children: [
-                for (final genre in item.genres)
-                  Chip(
-                    label: Text(genre),
-                    visualDensity: VisualDensity.compact,
-                    backgroundColor: panelHigh,
-                    side: BorderSide.none,
-                  ),
-              ],
-            ),
-          ),
-        if (directors.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 8),
-            child: Text('导演  ${directors.join('、')}', style: const TextStyle(color: muted)),
-          ),
-        if (actors.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 4),
-            child: Text('主演  ${actors.join('、')}', style: const TextStyle(color: muted)),
-          ),
-      ],
-    );
-  }
-
-  Widget _sourcePicker(EmbyItem item) {
+  Widget _sourceLine(EmbyItem item) {
     if (item.mediaSources.length <= 1) {
-      final summary = videoSummary(item.mediaSources.isEmpty ? null : item.mediaSources.first);
-      final size = formatBytes(item.mediaSources.isEmpty ? null : item.mediaSources.first.size);
-      final text = [summary, size].where((part) => part != null && part.isNotEmpty).join('  ·  ');
+      final text = videoSummary(item.mediaSources.isEmpty ? null : item.mediaSources.first) ?? '';
       if (text.isEmpty) return const SizedBox.shrink();
-      return Text(text, style: const TextStyle(color: muted));
+      return Text(text, style: TextStyle(color: context.cinema.muted, fontSize: 12));
     }
-    return DropdownButtonFormField<int>(
-      initialValue: _sourceIndex,
-      decoration: const InputDecoration(labelText: '版本'),
+    return DropdownButton<int>(
+      value: _sourceIndex.clamp(0, item.mediaSources.length - 1),
+      isExpanded: true,
       items: [
         for (var i = 0; i < item.mediaSources.length; i++)
-          DropdownMenuItem(
-            value: i,
-            child: Text(
-              [
-                item.mediaSources[i].name ?? '版本 ${i + 1}',
-                formatBytes(item.mediaSources[i].size),
-              ].where((part) => part.isNotEmpty).join(' · '),
-              overflow: TextOverflow.ellipsis,
-            ),
-          ),
+          DropdownMenuItem(value: i, child: Text(item.mediaSources[i].name ?? '版本 ${i + 1}')),
       ],
       onChanged: (value) {
         if (value != null) setState(() => _sourceIndex = value);
@@ -327,50 +397,36 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  Widget _subtitleList(EmbyItem item) {
-    final source = item.mediaSources.isEmpty
-        ? null
-        : item.mediaSources[_sourceIndex.clamp(0, item.mediaSources.length - 1)];
-    final subtitles = source?.externalSubtitles ?? const [];
-    if (subtitles.isEmpty) {
-      return const Text('没有单独的外挂字幕。内嵌字幕会随原始文件一起保存。', style: TextStyle(color: muted));
-    }
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('外挂字幕会一起下载', style: TextStyle(color: muted)),
-        const SizedBox(height: 6),
-        for (final stream in subtitles)
-          Text(
-            '· ${stream.displayTitle ?? stream.language ?? '字幕'}',
-            style: const TextStyle(height: 1.4),
-          ),
-      ],
-    );
-  }
-
-  Widget _seasonTile(EmbyItem series, EmbyItem season, client) {
+  Widget _episode(EmbyItem episode, EmbyClient? client) {
+    final fraction = episode.watchFraction;
+    final code = episodeCode(episode) ?? '';
     return ListTile(
       contentPadding: EdgeInsets.zero,
-      leading: Poster(
-        url: client?.imageUrl(season, maxHeight: 160) ?? '',
-        headers: client?.headers ?? const {},
-        width: 48,
-        height: 64,
+      leading: ClipRRect(
+        borderRadius: BorderRadius.circular(8),
+        child: SizedBox(
+          width: 112,
+          height: 64,
+          child: EmbyImage(
+            url: client?.imageUrl(episode, type: 'Thumb', maxWidth: 320) ?? '',
+            headers: client?.headers ?? const {},
+          ),
+        ),
       ),
-      title: Text(season.name),
-      subtitle: Text(season.childCount == null ? '' : '${season.childCount} 集'),
-      trailing: const Icon(Icons.chevron_right),
+      title: Text(code.isEmpty ? episode.name : '$code  ${episode.name}', maxLines: 2),
+      subtitle: fraction == null
+          ? Text(formatRuntime(episode.runTimeTicks), style: TextStyle(color: context.cinema.muted, fontSize: 12))
+          : Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(formatSeen(episode.playbackPositionTicks), style: TextStyle(color: context.cinema.muted, fontSize: 12)),
+                const SizedBox(height: 4),
+                LinearProgressIndicator(value: fraction, minHeight: 3),
+              ],
+            ),
       onTap: () {
         Navigator.of(context).push(
-          MaterialPageRoute<void>(
-            builder: (_) => SeasonPage(
-              seriesId: series.id,
-              seriesName: series.name,
-              seasonId: season.id,
-              seasonName: season.name,
-            ),
-          ),
+          MaterialPageRoute<void>(builder: (_) => DetailPage(itemId: episode.id, hint: episode)),
         );
       },
     );

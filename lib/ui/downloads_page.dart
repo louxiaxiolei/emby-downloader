@@ -13,6 +13,7 @@ import '../emby/urls.dart';
 import '../session_controller.dart';
 import '../storage/settings_store.dart';
 import '../theme.dart';
+import 'chrome.dart';
 import 'player_page.dart';
 import 'widgets.dart';
 
@@ -23,12 +24,21 @@ class DownloadsPage extends StatelessWidget {
   Widget build(BuildContext context) {
     final downloads = context.watch<DownloadService>();
     final settings = context.watch<SettingsStore>();
+    final cinema = context.cinema;
     final groups = <String, List<LocalFile>>{};
     for (final file in downloads.files) {
       groups.putIfAbsent(file.itemId, () => []).add(file);
     }
     return Scaffold(
-      appBar: AppBar(title: const Text('下载')),
+      appBar: AppBar(
+        title: const Text('下载'),
+        leading: Navigator.of(context).canPop()
+            ? Padding(
+                padding: const EdgeInsets.only(left: 8),
+                child: GlassButton(icon: Icons.arrow_back, onPressed: () => Navigator.of(context).maybePop()),
+              )
+            : null,
+      ),
       body: ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 32),
         children: [
@@ -41,112 +51,108 @@ class DownloadsPage extends StatelessWidget {
             contentPadding: EdgeInsets.zero,
             value: settings.wifiOnly,
             title: const Text('仅使用 Wi-Fi'),
-            subtitle: const Text('对新加入的任务生效', style: TextStyle(color: muted, fontSize: 12)),
-            onChanged: (value) {
-              settings.setWifiOnly(value);
-            },
+            subtitle: Text('对新加入的任务生效', style: TextStyle(color: cinema.muted, fontSize: 12)),
+            onChanged: settings.setWifiOnly,
           ),
           if (!kIsWeb && Platform.isAndroid)
             SwitchListTile(
               contentPadding: EdgeInsets.zero,
               value: settings.publicDownloads,
               title: const Text('完成后保存到系统下载目录'),
-              subtitle: const Text(
-                'Android 会把文件移动到 Download/Emby。关闭时文件留在应用目录，仍可在文件管理器里看到。',
-                style: TextStyle(color: muted, fontSize: 12),
-              ),
-              onChanged: (value) {
-                settings.setPublicDownloads(value);
-              },
+              onChanged: settings.setPublicDownloads,
             ),
           const SizedBox(height: 8),
-          const _SectionTitle('进行中'),
+          Text('进行中', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cinema.text)),
+          const SizedBox(height: 8),
           if (downloads.live.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('队列是空的', style: TextStyle(color: muted)),
-            )
+            Text('队列是空的', style: TextStyle(color: cinema.muted))
           else
-            ...downloads.live.map((item) => _LiveTile(item: item)),
+            ...downloads.live.map((item) => _LiveCard(item: item)),
           const SizedBox(height: 18),
-          const _SectionTitle('已保存'),
+          Text('已保存', style: TextStyle(fontSize: 18, fontWeight: FontWeight.w800, color: cinema.text)),
+          const SizedBox(height: 8),
           if (groups.isEmpty)
-            const Padding(
-              padding: EdgeInsets.symmetric(vertical: 12),
-              child: Text('还没有下载完成的文件', style: TextStyle(color: muted)),
-            )
+            Text('还没有下载完成的文件', style: TextStyle(color: cinema.muted))
           else
-            ...groups.entries.map((entry) => _SavedTile(files: entry.value)),
+            ...groups.entries.map((entry) => _SavedCard(files: entry.value)),
         ],
       ),
     );
   }
 }
 
-class _SectionTitle extends StatelessWidget {
-  const _SectionTitle(this.text);
-
-  final String text;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.only(bottom: 6, top: 4),
-      child: Text(text, style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700)),
-    );
-  }
-}
-
-class _LiveTile extends StatelessWidget {
-  const _LiveTile({required this.item});
+class _LiveCard extends StatelessWidget {
+  const _LiveCard({required this.item});
 
   final LiveDownload item;
 
   @override
   Widget build(BuildContext context) {
-    final downloads = context.read<DownloadService>();
+    final cinema = context.cinema;
     final showBar = item.status == TaskStatus.running || item.status == TaskStatus.paused;
-    final subtitle = [
+    final speed = item.speedLabel;
+    final remaining = item.remainingLabel;
+    final detail = [
       _statusLabel(item),
       if (item.meta.kind == 'subtitle') '字幕',
-      if (item.speedLabel != null && item.status == TaskStatus.running) item.speedLabel!,
-      if (item.remainingLabel != null && item.status == TaskStatus.running) '剩余 ${item.remainingLabel}',
+      if (speed != null && speed.isNotEmpty && item.status == TaskStatus.running) speed,
+      if (remaining != null && remaining.isNotEmpty && item.status == TaskStatus.running) '剩余 $remaining',
       if (item.error != null && item.error!.isNotEmpty) item.error!,
     ].join(' · ');
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 12),
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(12, 10, 8, 8),
+        padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
         child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(item.task.displayName.isEmpty ? item.task.filename : item.task.displayName),
-            const SizedBox(height: 4),
-            Text(subtitle, style: const TextStyle(color: muted, fontSize: 12)),
-            if (showBar) ...[
-              const SizedBox(height: 8),
-              LinearProgressIndicator(
-                value: progressBarValue(item.progress),
-                color: brass,
-                backgroundColor: line,
-                minHeight: 4,
-              ),
-              const SizedBox(height: 4),
-              Text(progressLabel(item.progress), style: const TextStyle(color: muted, fontSize: 12)),
-            ],
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                ClipRRect(
+                  borderRadius: BorderRadius.circular(10),
+                  child: SizedBox(
+                    width: 54,
+                    height: 78,
+                    child: EmbyImage(url: item.meta.imageUrl ?? '', headers: const {}),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(item.task.displayName.isEmpty ? item.task.filename : item.task.displayName, maxLines: 2),
+                      const SizedBox(height: 4),
+                      Text(detail, style: TextStyle(color: cinema.muted, fontSize: 12)),
+                      if (showBar) ...[
+                        const SizedBox(height: 8),
+                        LinearProgressIndicator(
+                          value: progressBarValue(item.progress),
+                          minHeight: 4,
+                          color: okGreen,
+                          backgroundColor: cinema.line,
+                        ),
+                        const SizedBox(height: 4),
+                        Text(progressLabel(item.progress), style: TextStyle(color: cinema.muted, fontSize: 12)),
+                      ],
+                    ],
+                  ),
+                ),
+              ],
+            ),
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
               children: [
                 if (item.status == TaskStatus.running)
-                  TextButton(onPressed: () => downloads.pause(item.task), child: const Text('暂停')),
+                  TextButton(onPressed: () => context.read<DownloadService>().pause(item.task), child: const Text('暂停')),
                 if (item.status == TaskStatus.paused)
-                  TextButton(onPressed: () => downloads.resume(item.task), child: const Text('继续')),
+                  TextButton(onPressed: () => context.read<DownloadService>().resume(item.task), child: const Text('继续')),
                 if (item.status == TaskStatus.failed || item.status == TaskStatus.notFound)
-                  TextButton(onPressed: () => downloads.retry(item), child: const Text('重试')),
+                  TextButton(onPressed: () => context.read<DownloadService>().retry(item), child: const Text('重试')),
                 if (item.active)
-                  TextButton(onPressed: () => downloads.cancel(item), child: const Text('取消')),
+                  TextButton(onPressed: () => _cancel(context, item), child: const Text('取消')),
                 if (!item.active)
-                  TextButton(onPressed: () => downloads.dismiss(item), child: const Text('移除')),
+                  TextButton(onPressed: () => context.read<DownloadService>().dismiss(item), child: const Text('移除')),
               ],
             ),
           ],
@@ -154,41 +160,56 @@ class _LiveTile extends StatelessWidget {
       ),
     );
   }
+
+  Future<void> _cancel(BuildContext context, LiveDownload item) async {
+    final downloads = context.read<DownloadService>();
+    final name = item.task.displayName.isEmpty ? item.task.filename : item.task.displayName;
+    final task = await downloads.cancel(item);
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text('已取消「$name」'),
+        action: SnackBarAction(label: '撤销', onPressed: () => downloads.undoCancel(task)),
+      ),
+    );
+  }
 }
 
-class _SavedTile extends StatelessWidget {
-  const _SavedTile({required this.files});
+class _SavedCard extends StatelessWidget {
+  const _SavedCard({required this.files});
 
   final List<LocalFile> files;
 
   @override
   Widget build(BuildContext context) {
+    final cinema = context.cinema;
     final video = files.where((file) => file.kind == 'video');
     final main = video.isEmpty ? files.first : video.first;
-    final subtitles = files.where((file) => file.kind == 'subtitle').length;
-    final location = main.sharedPath == null ? main.directory : '系统下载目录 / ${main.directory}';
     return Card(
-      margin: const EdgeInsets.only(bottom: 8),
+      margin: const EdgeInsets.only(bottom: 12),
       child: ListTile(
-        title: Text(main.title.isEmpty ? main.filename : main.title, maxLines: 2, overflow: TextOverflow.ellipsis),
+        contentPadding: const EdgeInsets.fromLTRB(12, 8, 8, 8),
+        leading: ClipRRect(
+          borderRadius: BorderRadius.circular(10),
+          child: SizedBox(
+            width: 48,
+            height: 68,
+            child: EmbyImage(url: '', headers: const {}),
+          ),
+        ),
+        title: Text(main.title.isEmpty ? main.filename : main.title, maxLines: 2),
         subtitle: Text(
-          [
-            main.filename,
-            if (formatBytes(main.bytes).isNotEmpty) formatBytes(main.bytes),
-            if (subtitles > 0) '外挂字幕 $subtitles',
-            formatWhen(main.savedAt),
-            location,
-          ].where((part) => part.isNotEmpty).join('\n'),
-          style: const TextStyle(color: muted, fontSize: 12, height: 1.35),
+          [main.filename, formatBytes(main.bytes), formatWhen(main.savedAt)].where((part) => part.isNotEmpty).join('\n'),
+          style: TextStyle(color: cinema.muted, fontSize: 12, height: 1.35),
         ),
         isThreeLine: true,
-        trailing: Wrap(
-          spacing: 0,
+        trailing: Row(
+          mainAxisSize: MainAxisSize.min,
           children: [
             IconButton(
               tooltip: '播放',
               onPressed: main.kind == 'video' ? () => _playSaved(context, files) : null,
-              icon: const Icon(Icons.play_arrow),
+              icon: const Icon(Icons.play_arrow_rounded),
             ),
             IconButton(
               tooltip: '删除',

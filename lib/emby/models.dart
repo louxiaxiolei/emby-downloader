@@ -53,17 +53,21 @@ class EmbySession {
 }
 
 class EmbyPerson {
-  const EmbyPerson({required this.name, this.type, this.role});
+  const EmbyPerson({required this.name, this.type, this.role, this.id, this.primaryTag});
 
   final String name;
   final String? type;
   final String? role;
+  final String? id;
+  final String? primaryTag;
 
   factory EmbyPerson.fromJson(Map<String, dynamic> json) {
     return EmbyPerson(
       name: json['Name'] as String? ?? '',
       type: json['Type'] as String?,
       role: json['Role'] as String?,
+      id: json['Id'] as String?,
+      primaryTag: json['PrimaryImageTag'] as String?,
     );
   }
 }
@@ -171,6 +175,7 @@ class EmbyItem {
     this.productionYear,
     this.primaryTag,
     this.backdropTag,
+    this.logoTag,
     this.communityRating,
     this.runTimeTicks,
     this.genres = const [],
@@ -183,11 +188,15 @@ class EmbyItem {
     this.childCount,
     this.isFolder = false,
     this.officialRating,
+    this.criticRating,
+    this.premiereDate,
+    this.productionLocations = const [],
     this.path,
     this.locationType,
     this.mediaSources = const [],
     this.people = const [],
     this.playbackPositionTicks,
+    this.lastPlayed,
   });
 
   final String id;
@@ -198,6 +207,7 @@ class EmbyItem {
   final int? productionYear;
   final String? primaryTag;
   final String? backdropTag;
+  final String? logoTag;
   final double? communityRating;
   final int? runTimeTicks;
   final List<String> genres;
@@ -210,6 +220,9 @@ class EmbyItem {
   final int? childCount;
   final bool isFolder;
   final String? officialRating;
+  final double? criticRating;
+  final String? premiereDate;
+  final List<String> productionLocations;
   final String? path;
   final String? locationType;
   final List<EmbyMediaSource> mediaSources;
@@ -217,6 +230,14 @@ class EmbyItem {
 
   /// From `UserData.PlaybackPositionTicks`, when the user endpoint returns it.
   final int? playbackPositionTicks;
+  final DateTime? lastPlayed;
+
+  double? get watchFraction {
+    final ticks = playbackPositionTicks;
+    final total = runTimeTicks;
+    if (ticks == null || total == null || total <= 0 || ticks <= 0) return null;
+    return (ticks / total).clamp(0.0, 1.0).toDouble();
+  }
 
   bool get isVirtual => locationType == 'Virtual';
 
@@ -260,10 +281,16 @@ class EmbyItem {
       final first = backdrops.first;
       if (first is String) backdrop = first;
     }
+    String? logo;
+    if (imageTags is Map && imageTags['Logo'] is String) {
+      logo = imageTags['Logo'] as String;
+    }
     final userData = json['UserData'];
     int? playbackTicks;
+    DateTime? lastPlayed;
     if (userData is Map) {
       playbackTicks = (userData['PlaybackPositionTicks'] as num?)?.toInt();
+      lastPlayed = DateTime.tryParse(userData['LastPlayedDate']?.toString() ?? '');
     }
     final itemStreams = _streamsFrom(json['MediaStreams']);
     var sources = _sourcesFrom(json['MediaSources']);
@@ -283,6 +310,7 @@ class EmbyItem {
       productionYear: (json['ProductionYear'] as num?)?.toInt(),
       primaryTag: primary,
       backdropTag: backdrop,
+      logoTag: logo,
       communityRating: (json['CommunityRating'] as num?)?.toDouble(),
       runTimeTicks: (json['RunTimeTicks'] as num?)?.toInt(),
       genres: [
@@ -298,6 +326,12 @@ class EmbyItem {
       childCount: (json['ChildCount'] as num?)?.toInt(),
       isFolder: json['IsFolder'] as bool? ?? false,
       officialRating: json['OfficialRating'] as String?,
+      criticRating: (json['CriticRating'] as num?)?.toDouble(),
+      premiereDate: json['PremiereDate'] as String?,
+      productionLocations: [
+        for (final place in (json['ProductionLocations'] as List?) ?? const [])
+          if (place is String && place.isNotEmpty) place,
+      ],
       path: json['Path'] as String?,
       locationType: json['LocationType'] as String?,
       mediaSources: sources,
@@ -306,6 +340,7 @@ class EmbyItem {
           if (person is Map<String, dynamic>) EmbyPerson.fromJson(person),
       ],
       playbackPositionTicks: playbackTicks,
+      lastPlayed: lastPlayed,
     );
   }
 }

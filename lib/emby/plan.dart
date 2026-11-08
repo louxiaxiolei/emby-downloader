@@ -12,6 +12,8 @@ class PlannedDownload {
     required this.kind,
     required this.title,
     required this.urls,
+    this.totalBytes,
+    this.imageUrl,
   });
 
   final String filename;
@@ -20,6 +22,8 @@ class PlannedDownload {
   final String itemId;
   final String kind;
   final String title;
+  final int? totalBytes;
+  final String? imageUrl;
 
   /// First URL is `/Items/{Id}/Download`. Later entries are fallbacks.
   final List<String> urls;
@@ -32,6 +36,8 @@ class DownloadMeta {
     required this.title,
     required this.stage,
     required this.urls,
+    this.totalBytes,
+    this.imageUrl,
   });
 
   final String kind;
@@ -39,6 +45,8 @@ class DownloadMeta {
   final String title;
   final int stage;
   final List<String> urls;
+  final int? totalBytes;
+  final String? imageUrl;
 
   DownloadMeta copyWith({int? stage}) {
     return DownloadMeta(
@@ -47,6 +55,8 @@ class DownloadMeta {
       title: title,
       stage: stage ?? this.stage,
       urls: urls,
+      totalBytes: totalBytes,
+      imageUrl: imageUrl,
     );
   }
 
@@ -56,6 +66,8 @@ class DownloadMeta {
     'title': title,
     'stage': stage,
     'urls': urls,
+    'totalBytes': totalBytes,
+    'imageUrl': imageUrl,
   });
 
   factory DownloadMeta.decode(String raw) {
@@ -70,6 +82,8 @@ class DownloadMeta {
           urls: [
             for (final url in (json['urls'] as List?) ?? const []) url.toString(),
           ],
+          totalBytes: (json['totalBytes'] as num?)?.toInt(),
+          imageUrl: json['imageUrl'] as String?,
         );
       }
     } catch (_) {}
@@ -130,6 +144,7 @@ List<PlannedDownload> planItemDownload({
       kind: 'video',
       title: title,
       urls: urls,
+      totalBytes: source?.size,
     ),
   ];
   final subtitles = source?.externalSubtitles ?? const <EmbyStream>[];

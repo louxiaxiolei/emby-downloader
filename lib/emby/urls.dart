@@ -164,7 +164,7 @@ Uri imageUri({
 }) {
   final segments = '/Items/$itemId/Images/$type${index == null ? '' : '/$index'}';
   return apiUri(apiRoot, segments, {
-    'quality': '90',
+    'quality': '85',
     if (maxWidth != null) 'maxWidth': '$maxWidth',
     if (maxHeight != null) 'maxHeight': '$maxHeight',
     if (tag != null && tag.isNotEmpty) 'tag': tag,
@@ -315,6 +315,27 @@ String formatBytes(int? bytes) {
   }
   final digits = value >= 10 || index == 0 ? 0 : 1;
   return '${value.toStringAsFixed(digits)} ${units[index]}';
+}
+
+String timeAgo(DateTime? time) {
+  if (time == null) return '';
+  final delta = DateTime.now().difference(time.toLocal());
+  if (delta.isNegative || delta.inSeconds < 45) return '刚刚';
+  if (delta.inMinutes < 60) return '${delta.inMinutes}分钟前';
+  if (delta.inHours < 24) return '${delta.inHours}小时前';
+  if (delta.inDays < 14) return '${delta.inDays}天前';
+  return formatWhen(time.toIso8601String());
+}
+
+String formatSeen(int? ticks) {
+  if (ticks == null || ticks <= 0) return '';
+  final total = ticks ~/ 10000000;
+  final hours = total ~/ 3600;
+  final minutes = (total % 3600) ~/ 60;
+  final seconds = total % 60;
+  String two(int value) => value.toString().padLeft(2, '0');
+  if (hours > 0) return '看到 $hours:${two(minutes)}:${two(seconds)}';
+  return '看到 ${two(minutes)}:${two(seconds)}';
 }
 
 String formatWhen(String iso) {

@@ -8,6 +8,7 @@ import '../emby/models.dart';
 import '../emby/urls.dart';
 import '../session_controller.dart';
 import '../theme.dart';
+import 'chrome.dart';
 import 'detail_page.dart';
 import 'widgets.dart';
 
@@ -106,39 +107,46 @@ class _SearchPageState extends State<SearchPage> {
     if (_error != null) return LoadError(message: _error!, onRetry: () => _search(_query.text));
     if (!_searched) return const EmptyHint(message: '搜索你服务器里的电影和剧集', icon: Icons.search);
     if (_items.isEmpty) return const EmptyHint(message: '没有匹配的条目');
-    return ListView.separated(
-      padding: const EdgeInsets.fromLTRB(8, 0, 8, 24),
+    return GridView.builder(
+      padding: const EdgeInsets.fromLTRB(16, 4, 16, 24),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 3,
+        crossAxisSpacing: 10,
+        mainAxisSpacing: 12,
+        childAspectRatio: 0.58,
+      ),
       itemCount: _items.length,
-      separatorBuilder: (context, index) => const Divider(height: 1),
       itemBuilder: (context, index) {
         final item = _items[index];
         final code = episodeCode(item);
         final subtitle = [
-          switch (item.type) {
-            'Movie' => '电影',
-            'Series' => '剧集',
-            'Episode' => '单集',
-            'Video' => '视频',
-            _ => item.type,
-          },
-          if (item.seriesName != null) item.seriesName!,
-          if (code != null) code,
           if (item.productionYear != null) '${item.productionYear}',
+          if (code != null) code,
         ].join(' · ');
-        return ListTile(
-          leading: Poster(
-            url: client?.imageUrl(item, maxHeight: 160) ?? '',
-            headers: client?.headers ?? const {},
-            width: 42,
-            height: 62,
-          ),
-          title: Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-          subtitle: Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(color: muted)),
+        return GestureDetector(
           onTap: () {
             Navigator.of(context).push(
               MaterialPageRoute<void>(builder: (_) => DetailPage(itemId: item.id, hint: item)),
             );
           },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(12),
+                  child: EmbyImage(
+                    url: client?.imageUrl(item, maxWidth: 300) ?? '',
+                    headers: client?.headers ?? const {},
+                  ),
+                ),
+              ),
+              const SizedBox(height: 6),
+              Text(item.name, maxLines: 1, overflow: TextOverflow.ellipsis, style: const TextStyle(fontSize: 12)),
+              if (subtitle.isNotEmpty)
+                Text(subtitle, maxLines: 1, style: TextStyle(fontSize: 11, color: context.cinema.muted)),
+            ],
+          ),
         );
       },
     );

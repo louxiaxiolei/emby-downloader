@@ -15,34 +15,36 @@ class SpeedEstimate {
 
 class SpeedTracker {
   final List<(DateTime at, int bytes)> _samples = [];
+  SpeedEstimate? _last;
 
   SpeedEstimate? addSample({
     required DateTime at,
     required int bytes,
     int? totalBytes,
   }) {
-    if (bytes < 0) return null;
-    if (_samples.isNotEmpty && bytes < _samples.last.$2) {
+    if (bytes < 0) return _last;
+    if (_samples.isNotEmpty && bytes + 4096 < _samples.last.$2) {
       _samples
         ..clear()
         ..add((at, bytes));
-      return null;
+      return _last;
     }
     _samples.add((at, bytes));
-    final cutoff = at.subtract(const Duration(seconds: 6));
+    final cutoff = at.subtract(const Duration(seconds: 8));
     while (_samples.length > 2 && _samples.first.$1.isBefore(cutoff)) {
       _samples.removeAt(0);
     }
     final span = _samples.last.$1.difference(_samples.first.$1);
-    if (span < const Duration(milliseconds: 1000)) return null;
+    if (span < const Duration(milliseconds: 800)) return _last;
     final delta = _samples.last.$2 - _samples.first.$2;
-    if (delta < 0) return null;
+    if (delta <= 0) return _last;
     final rate = delta / (span.inMicroseconds / 1000000);
     Duration? remaining;
     if (totalBytes != null && totalBytes > bytes && rate > 1) {
       remaining = Duration(microseconds: ((totalBytes - bytes) / rate * 1000000).round());
     }
-    return SpeedEstimate(bytesPerSecond: rate, remaining: remaining);
+    _last = SpeedEstimate(bytesPerSecond: rate, remaining: remaining);
+    return _last;
   }
 }
 

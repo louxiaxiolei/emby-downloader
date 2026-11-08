@@ -65,8 +65,7 @@ class EmbyClient {
 
   Future<EmbyItem> item(String id) async {
     final json = await _getObject('/Users/${session.userId}/Items/$id', {
-      'Fields':
-          'Overview,Genres,People,MediaSources,MediaStreams,Path,Studios,OfficialRating,CommunityRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,OriginalTitle',
+      'Fields': detailFields,
     });
     return EmbyItem.fromJson(json);
   }
@@ -88,6 +87,74 @@ class EmbyClient {
       'Fields':
           'Overview,MediaSources,MediaStreams,Path,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,RunTimeTicks,CommunityRating',
     });
+  }
+
+  static const detailFields =
+      'Overview,Genres,People,MediaSources,MediaStreams,Path,OfficialRating,CommunityRating,CriticRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,ProductionLocations,OriginalTitle';
+
+  Future<List<EmbyItem>> featured() async {
+    final page = await _getPage('/Users/${session.userId}/Items', {
+      'Recursive': 'true',
+      'IncludeItemTypes': 'Movie,Series',
+      'SortBy': 'DateCreated',
+      'SortOrder': 'Descending',
+      'Limit': '8',
+      'Fields': detailFields,
+      'ImageTypeLimit': '1',
+      'EnableImageTypes': 'Primary,Backdrop,Logo',
+    });
+    return page.items;
+  }
+
+  Future<List<EmbyItem>> resumeItems() async {
+    final page = await _getPage('/Users/${session.userId}/Items/Resume', {
+      'Limit': '12',
+      'MediaTypes': 'Video',
+      'Fields': detailFields,
+      'ImageTypeLimit': '1',
+      'EnableImageTypes': 'Primary,Backdrop,Thumb,Logo',
+    });
+    return page.items;
+  }
+
+  Future<List<EmbyItem>> nextUp() async {
+    final page = await _getPage('/Shows/NextUp', {
+      'UserId': session.userId,
+      'Limit': '12',
+      'Fields': detailFields,
+      'ImageTypeLimit': '1',
+      'EnableImageTypes': 'Primary,Backdrop,Thumb',
+    });
+    return page.items;
+  }
+
+  Future<List<EmbyItem>> latest({required String parentId, int limit = 16}) async {
+    final json = await _getJson('/Users/${session.userId}/Items/Latest', {
+      'ParentId': parentId,
+      'Limit': '$limit',
+      'Fields': detailFields,
+      'ImageTypeLimit': '1',
+      'EnableImageTypes': 'Primary,Backdrop,Logo,Thumb',
+    });
+    final raw = json is List
+        ? json
+        : json is Map
+        ? (json['Items'] as List?) ?? const []
+        : const [];
+    return [
+      for (final item in raw)
+        if (item is Map) EmbyItem.fromJson(Map<String, dynamic>.from(item)),
+    ];
+  }
+
+  Future<List<EmbyItem>> similar(String itemId) async {
+    final page = await _getPage('/Items/$itemId/Similar', {
+      'UserId': session.userId,
+      'Limit': '12',
+      'Fields': detailFields,
+      'ImageTypeLimit': '1',
+    });
+    return page.items;
   }
 
   Future<EmbyPage> search(String term) {
@@ -170,9 +237,13 @@ class EmbyClient {
     int? maxWidth,
     int? maxHeight,
   }) {
-    final tag = type == 'Backdrop' ? item.backdropTag : item.primaryTag;
-    if (type == 'Primary' && tag == null) return '';
-    if (type == 'Backdrop' && tag == null) return '';
+    final tag = switch (type) {
+      'Backdrop' => item.backdropTag,
+      'Logo' => item.logoTag,
+      'Thumb' => item.backdropTag ?? item.primaryTag,
+      _ => item.primaryTag,
+    };
+    if (tag == null || tag.isEmpty) return '';
     return imageUri(
       apiRoot: session.apiRoot,
       itemId: item.id,
@@ -184,6 +255,19 @@ class EmbyClient {
     ).toString();
   }
 
+  String personImageUrl(EmbyPerson person, {int maxWidth = 240}) {
+    final id = person.id;
+    final tag = person.primaryTag;
+    if (id == null || id.isEmpty || tag == null || tag.isEmpty) return '';
+    return imageUri(
+      apiRoot: session.apiRoot,
+      itemId: id,
+      type: 'Primary',
+      tag: tag,
+      maxWidth: maxWidth,
+    ).toString();
+  }
+
   void close() {
     if (ownsClient) _http.close();
   }
@@ -191,6 +275,18 @@ class EmbyClient {
   Future<EmbyPage> _getPage(String path, [Map<String, String>? query]) async {
     final json = await _getObject(path, query);
     return EmbyPage.fromJson(json);
+  }
+
+  Future<Object?> _getJson(String path, [Map<String, String>? query]) async {
+    final response = await _http
+        .get(apiUri(session.apiRoot, path, query), headers: headers)
+        .timeout(const Duration(seconds: 25));
+    if (response.statusCode == 401) throw EmbyUnauthorized();
+    if (response.statusCode >= 400) {
+      throw EmbyException('服务器返回 ${response.statusCode}', statusCode: response.statusCode);
+    }
+    if (response.body.isEmpty) return const [];
+    return jsonDecode(response.body);
   }
 
   Future<Map<String, dynamic>> _getObject(

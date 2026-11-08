@@ -116,6 +116,7 @@ class DownloadService extends ChangeNotifier {
   StreamSubscription<TaskUpdate>? _subscription;
   var _ready = false;
   final Set<String> _inFlight = {};
+  final Set<String> _canceledIds = {};
 
   int get activeCount => live.where((item) => item.active).length;
 
@@ -173,15 +174,74 @@ class DownloadService extends ChangeNotifier {
   }
 
   Future<void> pause(DownloadTask task) async {
-    await FileDownloader().pause(task);
+    final entry = _find(task.taskId);
+    final previous = entry?.status;
+    if (entry != null) {
+      entry.status = TaskStatus.paused;
+      notifyListeners();
+    }
+    try {
+      final ok = await FileDownloader().pause(task);
+      if (!ok && entry != null && previous != null && _find(task.taskId) != null) {
+        entry.status = previous;
+        notifyListeners();
+      }
+    } catch (_) {
+      if (entry != null && previous != null && _find(task.taskId) != null) {
+        entry.status = previous;
+        notifyListeners();
+      }
+    }
   }
 
   Future<void> resume(DownloadTask task) async {
-    await FileDownloader().resume(task);
+    final entry = _find(task.taskId);
+    if (entry != null) {
+      entry.status = TaskStatus.running;
+      notifyListeners();
+    }
+    try {
+      final ok = await FileDownloader().resume(task);
+      if (!ok && entry != null && _find(task.taskId) != null) {
+        entry.status = TaskStatus.paused;
+        notifyListeners();
+      }
+    } catch (_) {
+      if (entry != null && _find(task.taskId) != null) {
+        entry.status = TaskStatus.paused;
+        notifyListeners();
+      }
+    }
   }
 
-  Future<void> cancel(LiveDownload item) async {
-    await FileDownloader().cancelTasksWithIds([item.task.taskId]);
+  /// Stops the platform task immediately and drops the row.
+  ///
+  /// On iOS, `URLSessionDownloadTask.cancel()` for a file that sent
+  /// `Accept-Ranges: bytes` includes resume data. background_downloader treats
+  /// that as a pause, so the row used to stay at the last percent with no
+  /// visible change. The row is removed before the platform call returns, and
+  /// a follow-up pause for this id is cancelled again instead of being shown.
+  Future<DownloadTask> cancel(LiveDownload item) async {
+    final task = item.task;
+    _canceledIds.add(task.taskId);
+    live.removeWhere((entry) => entry.task.taskId == task.taskId);
+    notifyListeners();
+    try {
+      await FileDownloader().cancelTasksWithIds([task.taskId]);
+    } catch (_) {}
+    await _deletePartial(task);
+    try {
+      await FileDownloader().database.deleteRecordWithId(task.taskId);
+    } catch (_) {}
+    return task;
+  }
+
+  Future<void> undoCancel(DownloadTask task) async {
+    _canceledIds.remove(task.taskId);
+    final revived = task.copyWith(taskId: const Uuid().v4());
+    final ok = await FileDownloader().enqueue(revived);
+    if (ok) _upsert(revived, TaskStatus.enqueued, keepExistingStatus: true);
+    notifyListeners();
   }
 
   Future<void> dismiss(LiveDownload item) async {
@@ -293,7 +353,11 @@ class DownloadService extends ChangeNotifier {
           usedNames: names,
         );
         for (final plan in plans) {
-          final task = _task(plan, client);
+          final task = _task(
+            plan,
+            client,
+            imageUrl: client.imageUrl(item, maxWidth: 400),
+          );
           final ok = await FileDownloader().enqueue(task);
           if (ok) {
             // The status callback may already have inserted this task id.
@@ -309,13 +373,16 @@ class DownloadService extends ChangeNotifier {
     return EnqueueResult(enqueued: enqueued, skipped: skipped);
   }
 
-  DownloadTask _task(PlannedDownload plan, EmbyClient client) {
+  DownloadTask _task(PlannedDownload plan, EmbyClient client, {String? imageUrl}) {
+    final poster = (imageUrl != null && imageUrl.isNotEmpty) ? imageUrl : plan.imageUrl;
     final meta = DownloadMeta(
       kind: plan.kind,
       itemId: plan.itemId,
       title: plan.title,
       stage: 0,
       urls: plan.urls,
+      totalBytes: plan.totalBytes,
+      imageUrl: poster,
     );
     return DownloadTask(
       taskId: const Uuid().v4(),
@@ -358,6 +425,29 @@ class DownloadService extends ChangeNotifier {
   }
 
   Future<void> _onStatus(DownloadTask task, TaskStatusUpdate update) async {
+    if (_canceledIds.contains(task.taskId)) {
+      live.removeWhere((entry) => entry.task.taskId == task.taskId);
+      if (update.status == TaskStatus.paused ||
+          update.status == TaskStatus.running ||
+          update.status == TaskStatus.enqueued ||
+          update.status == TaskStatus.waitingToRetry) {
+        try {
+          await FileDownloader().cancelTasksWithIds([task.taskId]);
+        } catch (_) {}
+        await _deletePartial(task);
+      }
+      if (update.status == TaskStatus.canceled ||
+          update.status == TaskStatus.failed ||
+          update.status == TaskStatus.complete ||
+          update.status == TaskStatus.notFound) {
+        _canceledIds.remove(task.taskId);
+        try {
+          await FileDownloader().database.deleteRecordWithId(task.taskId);
+        } catch (_) {}
+      }
+      notifyListeners();
+      return;
+    }
     if (update.status == TaskStatus.complete || update.status == TaskStatus.canceled) {
       final entry = _find(task.taskId);
       if (entry != null) entry.status = update.status;
@@ -527,14 +617,15 @@ class DownloadService extends ChangeNotifier {
   }
 
   void _applySpeed(LiveDownload entry, TaskProgressUpdate update) {
-    if (update.progress <= 0 || !update.hasExpectedFileSize || update.expectedFileSize <= 0) {
-      return;
-    }
-    final bytes = (update.progress * update.expectedFileSize).round();
+    final known = update.hasExpectedFileSize && update.expectedFileSize > 0
+        ? update.expectedFileSize
+        : entry.meta.totalBytes;
+    if (update.progress <= 0 || known == null || known <= 0) return;
+    final bytes = (update.progress * known).round();
     final estimate = entry.speed.addSample(
       at: DateTime.now(),
       bytes: bytes,
-      totalBytes: update.expectedFileSize,
+      totalBytes: known,
     );
     if (estimate == null) return;
     entry.speedLabel = formatTransferSpeed(estimate.bytesPerSecond);
@@ -607,6 +698,14 @@ class DownloadService extends ChangeNotifier {
     }
     final target = File(path);
     if (await target.exists()) await target.delete();
+  }
+
+  Future<void> _deletePartial(DownloadTask task) async {
+    try {
+      final path = await task.filePath();
+      final file = File(path);
+      if (await file.exists()) await file.delete();
+    } catch (_) {}
   }
 
   @override

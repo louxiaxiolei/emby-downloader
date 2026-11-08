@@ -1,17 +1,34 @@
-import 'package:flutter/foundation.dart';
+import 'package:flutter/material.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 class SettingsStore extends ChangeNotifier {
   bool wifiOnly = false;
   bool publicDownloads = false;
+  ThemeMode themeMode = ThemeMode.system;
   bool ready = false;
 
   Future<void> load() async {
     final prefs = await SharedPreferences.getInstance();
     wifiOnly = prefs.getBool('wifi_only') ?? false;
     publicDownloads = prefs.getBool('public_downloads') ?? false;
+    themeMode = switch (prefs.getString('theme_mode')) {
+      'light' => ThemeMode.light,
+      'dark' => ThemeMode.dark,
+      _ => ThemeMode.system,
+    };
     ready = true;
     notifyListeners();
+  }
+
+  Future<void> setThemeMode(ThemeMode mode) async {
+    themeMode = mode;
+    notifyListeners();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString('theme_mode', switch (mode) {
+      ThemeMode.light => 'light',
+      ThemeMode.dark => 'dark',
+      ThemeMode.system => 'system',
+    });
   }
 
   Future<void> setWifiOnly(bool value) async {
