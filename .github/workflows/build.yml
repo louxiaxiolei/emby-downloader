@@ -1,0 +1,86 @@
+name: build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  android:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.35.7"
+          cache: true
+      - run: flutter pub get
+      - run: flutter analyze
+      - run: flutter test
+      - run: flutter build apk --release --split-per-abi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emby-downloader-arm64-v8a
+          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emby-downloader-armeabi-v7a
+          path: build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          if-no-files-found: error
+
+  ios-unsigned-ipa:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: "3.35.7"
+          cache: true
+      - run: flutter pub get
+      - run: flutter build ios --release --no-codesign
+      - name: Pack unsigned IPA
+        run: bash tool/pack_unsigned_ipa.sh build/ios/iphoneos/Runner.app artifacts/emby-downloader-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: emby-downloader-ios-unsigned-ipa
+          path: artifacts/emby-downloader-unsigned.ipa
+          if-no-files-found: error
+      - name: Report IPA size
+        run: ls -lh artifacts/emby-downloader-unsigned.ipa
+
+  release:
+    needs: [android, ios-unsigned-ipa]
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      actions: read
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+      - name: Publish a rolling GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          files=()
+          while IFS= read -r -d '' f; do
+            files+=("$f")
+          done < <(find dist -type f \( -name '*.apk' -o -name '*.ipa' \) -print0)
+          test "${#files[@]}" -ge 3
+          gh release delete continuous --yes --cleanup-tag || true
+          gh release create continuous "${files[@]}" \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Continuous build" \
+            --notes "Unsigned iOS IPA plus split Android APKs from main. The IPA is built with flutter build ios --release --no-codesign and is a zip of Payload/Runner.app."

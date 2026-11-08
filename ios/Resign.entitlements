@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  重签名模板。把 TEAMID 换成你的 Team ID，Bundle ID 与描述文件一致。
+  开发描述文件通常还需要 get-task-allow = true。
+  Ad Hoc / 企业签名请删除 get-task-allow。
+
+  不要添加：aps-environment、associated-domains、com.apple.developer.icloud-services、
+  com.apple.security.application-groups、keychain-access-groups、wifi-info、HealthKit、HomeKit。
+  本应用的后台下载使用 NSURLSession，不需要 Background Modes entitlement。
+  更省事的做法是不要把这个文件传给签名工具，让工具从描述文件写入
+  application-identifier 和 com.apple.developer.team-identifier。
+-->
+<plist version="1.0">
+<dict>
+	<key>application-identifier</key>
+	<string>TEAMID.app.embydownloader</string>
+	<key>com.apple.developer.team-identifier</key>
+	<string>TEAMID</string>
+	<key>get-task-allow</key>
+	<true/>
+</dict>
+</plist>

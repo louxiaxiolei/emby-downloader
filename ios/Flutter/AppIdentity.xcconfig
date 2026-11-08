@@ -1,0 +1,3 @@
+// iOS Bundle ID。重签名或更换描述文件时，通常只改这一行。
+// Android 应用 ID 在 android/app/build.gradle.kts 的 applicationId。
+BUNDLE_ID=app.embydownloader
