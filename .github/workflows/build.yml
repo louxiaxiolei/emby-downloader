@@ -32,12 +32,28 @@ jobs:
           bash tool/remux_sample.sh
       - name: Seed the Kotlin compiler from Maven Central
         run: |
+          set -euo pipefail
           base=android/local-m2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21
           mkdir -p "$base"
-          curl -fsSL -o "$base/kotlin-compiler-embeddable-2.0.21.pom" \
-            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.pom
-          curl -fsSL -o "$base/kotlin-compiler-embeddable-2.0.21.jar" \
-            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.jar
+          fetch() {
+            local name="$1"
+            shift
+            local url
+            for url in "$@"; do
+              if curl --retry 5 --retry-all-errors --retry-delay 2 -fL --max-time 180 -o "$base/$name" "$url"; then
+                return 0
+              fi
+              echo "failed $url"
+            done
+            return 1
+          }
+          fetch kotlin-compiler-embeddable-2.0.21.pom \
+            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.pom \
+            https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.pom
+          fetch kotlin-compiler-embeddable-2.0.21.jar \
+            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.jar \
+            https://repo.maven.apache.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.jar \
+            https://repo.huaweicloud.com/repository/maven/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.jar
       - name: Build split APKs
         run: |
           set -euo pipefail
