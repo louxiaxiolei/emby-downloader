@@ -92,10 +92,11 @@ class ShelfHeader extends StatelessWidget {
 }
 
 class ServerPill extends StatelessWidget {
-  const ServerPill({super.key, required this.label, required this.onTap});
+  const ServerPill({super.key, required this.label, required this.onTap, this.onLongPress});
 
   final String label;
   final VoidCallback onTap;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -103,6 +104,7 @@ class ServerPill extends StatelessWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: onTap,
+        onLongPress: onLongPress,
         borderRadius: BorderRadius.circular(28),
         child: Ink(
           decoration: BoxDecoration(

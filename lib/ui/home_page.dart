@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 import 'package:palette_generator/palette_generator.dart';
@@ -5,6 +7,7 @@ import 'package:provider/provider.dart';
 
 import '../emby/api.dart';
 import '../emby/models.dart';
+import '../emby/net_log.dart';
 import '../emby/urls.dart';
 import '../session_controller.dart';
 import '../theme.dart';
@@ -22,7 +25,11 @@ class LibraryShelf {
 }
 
 class HomePage extends StatefulWidget {
-  const HomePage({super.key});
+  const HomePage({super.key, this.sectionTimeout = const Duration(seconds: 12)});
+
+  /// Each home request is abandoned after this, so one stuck call cannot
+  /// keep the spinner up.
+  final Duration sectionTimeout;
 
   @override
   State<HomePage> createState() => _HomePageState();
@@ -36,6 +43,7 @@ class _HomePageState extends State<HomePage> {
   List<EmbyItem> _nextUp = const [];
   List<LibraryShelf> _shelves = const [];
   Color? _tint;
+  var _generation = 0;
 
   @override
   void initState() {
@@ -45,70 +53,121 @@ class _HomePageState extends State<HomePage> {
 
   Future<void> _load() async {
     final client = context.read<SessionController>().client;
-    if (client == null) return;
-    setState(() {
-      _loading = _hero.isEmpty;
-      _error = null;
-    });
-    try {
-      final featured = await client.featured();
-      final resume = await _quiet(client.resumeItems);
-      final next = await _quiet(client.nextUp);
-      final views = await client.views();
-      final shelves = <LibraryShelf>[];
-      for (final view in views.items) {
-        if (view.collectionType == 'photos' || view.collectionType == 'livetv') continue;
-        final latest = await _quiet(() => client.latest(parentId: view.id));
-        if (latest.isEmpty) continue;
-        shelves.add(
-          LibraryShelf(title: view.name, parentId: view.id, items: latest),
-        );
+    final generation = ++_generation;
+    if (client == null) {
+      if (mounted) {
+        setState(() {
+          _loading = false;
+          _error = '没有登录信息';
+        });
       }
-      if (!mounted) return;
+      return;
+    }
+    if (mounted) {
       setState(() {
-        _hero = featured;
-        _resume = resume;
-        _nextUp = next;
-        _shelves = shelves;
-        _loading = false;
+        _loading = true;
+        _error = null;
       });
-      final first = featured.isEmpty ? null : featured.first;
-      if (first != null) {
-        _sample(client.imageUrl(first, type: 'Backdrop', maxWidth: 240), client.headers);
+    }
+    final notes = <String>[];
+
+    Future<T?> section<T>(String name, Future<T> Function() run) async {
+      final started = DateTime.now();
+      try {
+        final value = await run().timeout(widget.sectionTimeout);
+        NetLog.instance.add('$name 完成 ${DateTime.now().difference(started).inMilliseconds}ms');
+        return value;
+      } catch (error) {
+        final line = '$name 失败 ${DateTime.now().difference(started).inMilliseconds}ms $error';
+        notes.add(line);
+        NetLog.instance.add(line);
+        return null;
       }
-    } on EmbyUnauthorized {
-      if (!mounted) return;
-      await context.read<SessionController>().invalidate();
-    } catch (error) {
-      if (!mounted) return;
+    }
+
+    final views = await section('资料库', client.views);
+    if (!mounted || generation != _generation) return;
+    if (views == null) {
       setState(() {
-        _error = friendlyError(error);
         _loading = false;
+        _error = notes.isEmpty ? '资料库请求失败' : notes.join('\n');
+      });
+      return;
+    }
+
+    final placeholders = <LibraryShelf>[
+      for (final view in views.items)
+        if (view.collectionType != 'photos' && view.collectionType != 'livetv')
+          LibraryShelf(title: view.name, parentId: view.id, items: const []),
+    ];
+    setState(() {
+      _loading = false;
+      _error = null;
+      _shelves = placeholders;
+    });
+
+    final featured = section('横幅', client.featured);
+    final resume = section('继续观看', client.resumeItems);
+    final nextUp = section('下一集', client.nextUp);
+    final latest = [
+      for (final shelf in placeholders) section(shelf.title, () => client.latest(parentId: shelf.parentId)),
+    ];
+
+    final featuredItems = await featured;
+    if (!mounted || generation != _generation) return;
+    if (featuredItems != null && featuredItems.isNotEmpty) {
+      setState(() => _hero = featuredItems);
+      _tintFrom(client, featuredItems.first);
+    }
+    final resumeItems = await resume;
+    final nextItems = await nextUp;
+    if (!mounted || generation != _generation) return;
+    setState(() {
+      _resume = resumeItems ?? const [];
+      _nextUp = nextItems ?? const [];
+    });
+
+    final filled = <LibraryShelf>[];
+    for (var i = 0; i < placeholders.length; i++) {
+      final items = await latest[i];
+      if (!mounted || generation != _generation) return;
+      filled.add(
+        LibraryShelf(
+          title: placeholders[i].title,
+          parentId: placeholders[i].parentId,
+          items: items ?? const [],
+        ),
+      );
+      setState(() {
+        _shelves = [...filled, ...placeholders.skip(filled.length)];
+        if (_hero.isEmpty && (items ?? const []).isNotEmpty) {
+          _hero = items!;
+          _tintFrom(client, items.first);
+        }
       });
     }
   }
 
-  Future<List<EmbyItem>> _quiet(Future<List<EmbyItem>> Function() load) async {
-    try {
-      return await load();
-    } catch (_) {
-      return const [];
-    }
+  void _tintFrom(EmbyClient client, EmbyItem item) {
+    final url = client.imageUrl(item, type: 'Backdrop', maxWidth: 160);
+    if (url.isEmpty) return;
+    unawaited(_sample(url, client.headers));
   }
 
   Future<void> _sample(String url, Map<String, String> headers) async {
-    if (url.isEmpty) return;
     try {
       final palette = await PaletteGenerator.fromImageProvider(
         CachedNetworkImageProvider(url, headers: headers),
-        maximumColorCount: 8,
-        size: const Size(64, 36),
-      );
+        maximumColorCount: 6,
+        size: const Size(32, 18),
+      ).timeout(const Duration(seconds: 4));
       final color = palette.lightVibrantColor?.color ??
           palette.vibrantColor?.color ??
           palette.dominantColor?.color;
       if (color != null && mounted) setState(() => _tint = color);
-    } catch (_) {}
+    } catch (error) {
+      NetLog.instance.add('取色失败 $error');
+    }
   }
 
   void _open(EmbyItem item) {

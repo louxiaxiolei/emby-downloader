@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 
 import 'models.dart';
+import 'net_log.dart';
 import 'playback.dart';
 import 'urls.dart';
 
@@ -92,6 +93,11 @@ class EmbyClient {
   static const detailFields =
       'Overview,Genres,People,MediaSources,MediaStreams,Path,OfficialRating,CommunityRating,CriticRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,ProductionLocations,OriginalTitle';
 
+  /// Home rows must not ask for MediaSources or People. On a large library
+  /// that makes Emby open every file, and the home spinner waits on it.
+  static const listFields =
+      'Overview,Genres,OfficialRating,CommunityRating,CriticRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,ProductionLocations';
+
   Future<List<EmbyItem>> featured() async {
     final page = await _getPage('/Users/${session.userId}/Items', {
       'Recursive': 'true',
@@ -99,7 +105,7 @@ class EmbyClient {
       'SortBy': 'DateCreated',
       'SortOrder': 'Descending',
       'Limit': '8',
-      'Fields': detailFields,
+      'Fields': listFields,
       'ImageTypeLimit': '1',
       'EnableImageTypes': 'Primary,Backdrop,Logo',
     });
@@ -110,7 +116,7 @@ class EmbyClient {
     final page = await _getPage('/Users/${session.userId}/Items/Resume', {
       'Limit': '12',
       'MediaTypes': 'Video',
-      'Fields': detailFields,
+      'Fields': listFields,
       'ImageTypeLimit': '1',
       'EnableImageTypes': 'Primary,Backdrop,Thumb,Logo',
     });
@@ -121,7 +127,7 @@ class EmbyClient {
     final page = await _getPage('/Shows/NextUp', {
       'UserId': session.userId,
       'Limit': '12',
-      'Fields': detailFields,
+      'Fields': listFields,
       'ImageTypeLimit': '1',
       'EnableImageTypes': 'Primary,Backdrop,Thumb',
     });
@@ -132,7 +138,7 @@ class EmbyClient {
     final json = await _getJson('/Users/${session.userId}/Items/Latest', {
       'ParentId': parentId,
       'Limit': '$limit',
-      'Fields': detailFields,
+      'Fields': listFields,
       'ImageTypeLimit': '1',
       'EnableImageTypes': 'Primary,Backdrop,Logo,Thumb',
     });
@@ -278,9 +284,7 @@ class EmbyClient {
   }
 
   Future<Object?> _getJson(String path, [Map<String, String>? query]) async {
-    final response = await _http
-        .get(apiUri(session.apiRoot, path, query), headers: headers)
-        .timeout(const Duration(seconds: 25));
+    final response = await _send(apiUri(session.apiRoot, path, query));
     if (response.statusCode == 401) throw EmbyUnauthorized();
     if (response.statusCode >= 400) {
       throw EmbyException('服务器返回 ${response.statusCode}', statusCode: response.statusCode);
@@ -293,10 +297,25 @@ class EmbyClient {
     String path, [
     Map<String, String>? query,
   ]) async {
-    final response = await _http
-        .get(apiUri(session.apiRoot, path, query), headers: headers)
-        .timeout(const Duration(seconds: 25));
+    final response = await _send(apiUri(session.apiRoot, path, query));
     return _decodeObject(response);
+  }
+
+  Future<http.Response> _send(Uri uri) async {
+    final started = DateTime.now();
+    final label = NetLog.redact(uri);
+    try {
+      final response = await _http.get(uri, headers: headers).timeout(const Duration(seconds: 20));
+      NetLog.instance.add(
+        '$label ${response.statusCode} ${DateTime.now().difference(started).inMilliseconds}ms',
+      );
+      return response;
+    } catch (error) {
+      NetLog.instance.add(
+        '$label 失败 ${DateTime.now().difference(started).inMilliseconds}ms $error',
+      );
+      rethrow;
+    }
   }
 
   Future<Map<String, dynamic>> _postObject(

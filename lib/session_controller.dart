@@ -16,6 +16,13 @@ class SessionController extends ChangeNotifier {
 
   EmbySession? get session => _session;
   EmbyClient? get client => _client;
+
+  /// Used by tests, and safe for a restored session that already has a client.
+  void bindClient(EmbyClient client) {
+    _client = client;
+    _session = client.session;
+    notifyListeners();
+  }
   bool get signedIn => _session != null && _client != null;
 
   Future<void> restore() async {

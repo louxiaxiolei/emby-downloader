@@ -7,6 +7,7 @@ import '../storage/settings_store.dart';
 import 'chrome.dart';
 import 'downloads_page.dart';
 import 'home_page.dart';
+import 'log_page.dart';
 import 'search_page.dart';
 
 class ShellPage extends StatelessWidget {
@@ -26,6 +27,9 @@ class ShellPage extends StatelessWidget {
             child: ServerPill(
               label: session?.serverName ?? '服务器',
               onTap: () => _sheet(context, active),
+              onLongPress: () {
+                Navigator.of(context).push(MaterialPageRoute<void>(builder: (_) => const LogPage()));
+              },
             ),
           ),
           Positioned(
