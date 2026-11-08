@@ -28,7 +28,9 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           bash tool/remux_sample.sh
-      - run: flutter build apk --release --split-per-abi
+      - name: Build split APKs
+        run: |
+          flutter build apk --release --split-per-abi || flutter build apk --release --split-per-abi
       - name: Name release APKs
         run: |
           mkdir -p artifacts
@@ -55,7 +57,17 @@ jobs:
           flutter-version: "3.35.7"
           cache: true
       - run: flutter pub get
-      - run: flutter build ios --release --no-codesign
+      - name: Build unsigned iOS
+        run: |
+          set -euo pipefail
+          build() { flutter build ios --release --no-codesign; }
+          if ! build; then
+            echo "iOS build failed; clearing CocoaPods and the mpv download, then retrying once"
+            rm -rf ios/Pods ios/.symlinks build/ios
+            rm -rf "$HOME"/.pub-cache/hosted/pub.dev/media_kit_libs_ios_video-*/ios/Frameworks
+            rm -rf "$HOME"/.pub-cache/hosted/pub.dev/media_kit_libs_ios_video-*/ios/.cache
+            build
+          fi
       - name: Pack unsigned IPA
         run: bash tool/pack_unsigned_ipa.sh build/ios/iphoneos/Runner.app artifacts/emby-downloader.ipa
       - uses: actions/upload-artifact@v4
