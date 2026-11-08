@@ -64,9 +64,11 @@ jobs:
           cache: true
       - run: flutter pub get
       - name: Patch the mpv framework symlink script
-        run: python3 tool/patch_mpv_symlinks.py
-      - name: Build unsigned iOS
-        run: flutter build ios --release --no-codesign
+        run: |
+          python3 tool/patch_mpv_symlinks.py
+          dir=$(echo "$HOME"/.pub-cache/hosted/pub.dev/media_kit_libs_ios_video-*/ios)
+          make -C "$dir"
+          find "$dir/Frameworks/.symlinks/mpv" -maxdepth 2 -print
       - name: Pack unsigned IPA
         run: bash tool/pack_unsigned_ipa.sh build/ios/iphoneos/Runner.app artifacts/emby-downloader.ipa
       - uses: actions/upload-artifact@v4

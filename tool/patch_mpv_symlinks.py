@@ -16,6 +16,8 @@ from pathlib import Path
 
 NEEDLE = "cut -d '-' -f 1 -f 3"
 REPLACEMENT = "cut -d '-' -f 1,3"
+CURL_NEEDLE = "\tcurl -L \\\n"
+CURL_REPLACEMENT = "\tcurl -L --retry 5 --retry-all-errors --retry-delay 2 \\\n"
 
 
 def main() -> int:
@@ -34,6 +36,13 @@ def main() -> int:
         else:
             print(f"unexpected symlink script {script}", file=sys.stderr)
             return 1
+        makefile = script.parent / "Makefile"
+        make_text = makefile.read_text()
+        if CURL_NEEDLE in make_text and "--retry 5" not in make_text:
+            makefile.write_text(make_text.replace(CURL_NEEDLE, CURL_REPLACEMENT, 1))
+            print(f"patched {makefile}")
+        else:
+            print(f"curl retry already set or unexpected makefile {makefile}")
         symlinks = script.parent / "Frameworks" / ".symlinks"
         if symlinks.exists():
             shutil.rmtree(symlinks)
