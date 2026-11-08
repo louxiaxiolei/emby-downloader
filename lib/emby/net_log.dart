@@ -20,6 +20,9 @@ class NetLog extends ChangeNotifier {
     notifyListeners();
   }
 
+  /// Oldest first, tokens already removed when the line was stored.
+  String exportText() => lines.join('\n');
+
   static String redact(Uri uri) {
     final params = <String, String>{};
     uri.queryParameters.forEach((key, value) {

@@ -1,8 +1,6 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:flutter/material.dart';
-import 'package:path/path.dart' as p;
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -14,9 +12,8 @@ import '../emby/net_log.dart';
 import '../emby/playback.dart';
 import '../emby/playback_guard.dart';
 import '../recordings/clip.dart';
+import '../recordings/clip_queue.dart';
 import '../recordings/names.dart';
-import '../recordings/remux.dart';
-import '../recordings/store.dart';
 import '../session_controller.dart';
 import '../storage/settings_store.dart';
 import '../theme.dart';
@@ -81,16 +78,11 @@ class _PlayerPageState extends State<PlayerPage> {
   Duration _duration = Duration.zero;
   Tracks _tracks = const Tracks();
   var _recording = false;
-  String _recordExt = 'mkv';
   Duration _recordStart = Duration.zero;
-  Duration _recordChunkFrom = Duration.zero;
   DateTime? _recordWall;
   Duration _recordElapsed = Duration.zero;
   Timer? _recordTimer;
-  var _recordId = 0;
-  var _recordSegment = 0;
-  final List<String> _recordSegments = [];
-  Future<void> _recordJobs = Future<void>.value();
+  var _saveRecordingToPhotos = false;
 
   @override
   void didChangeDependencies() {
@@ -225,11 +217,8 @@ class _PlayerPageState extends State<PlayerPage> {
     const options = {
       'hwdec': 'auto',
       'cache': 'yes',
-      'demuxer-readahead-secs': '20',
-      'demuxer-max-bytes': '150MiB',
-      // Keep the played range. stream-record ignores packets already in this cache.
-      'demuxer-max-back-bytes': '300MiB',
-      'demuxer-seekable-cache': 'yes',
+      'demuxer-max-bytes': '64MiB',
+      'demuxer-max-back-bytes': '32MiB',
       'network-timeout': '60',
     };
     for (final entry in options.entries) {
@@ -456,18 +445,8 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _startRecording() async {
-    final native = _player.platform;
-    if (native is! NativePlayer) {
-      NetLog.instance.add('开始录制失败 没有 mpv');
-      _tell('无法录制');
-      return;
-    }
-    _recordId = DateTime.now().millisecondsSinceEpoch;
-    _recordSegment = 0;
-    _recordSegments.clear();
-    _recordExt = sourceContainer(widget.playback.url);
+    _saveRecordingToPhotos = context.read<SettingsStore>().saveRecordingsToPhotos;
     _recordStart = _position;
-    _recordChunkFrom = _position;
     _recordWall = DateTime.now();
     _recordElapsed = Duration.zero;
     _recordTimer?.cancel();
@@ -475,203 +454,40 @@ class _PlayerPageState extends State<PlayerPage> {
       final start = _recordWall;
       if (!mounted || start == null) return;
       setState(() => _recordElapsed = DateTime.now().difference(start));
-      final elapsed = DateTime.now().difference(start);
-      if (elapsed.inSeconds > 0 && elapsed.inSeconds % 12 == 0) {
-        _enqueueDump(_position, why: '分段');
-      }
     });
-    NetLog.instance.add(
-      '开始录制 dump-cache 从 ${formatClock(_position)} back-bytes=300MiB。stream-record 不写已经在缓存里的包',
-    );
+    NetLog.instance.add('开始录制记时 ${formatClock(_position)}，停止后再单独下载这一段');
     if (mounted) setState(() => _recording = true);
   }
 
-  void _enqueueDump(Duration end, {required String why}) {
-    final start = _recordChunkFrom;
-    if (!recordSpanIsUsable(start, end)) return;
-    _recordChunkFrom = end;
-    final index = _recordSegment++;
-    final id = _recordId;
-    _recordJobs = _recordJobs.then((_) => _dumpChunk(id, index, start, end, why));
-  }
-
-  Future<void> _dumpChunk(int id, int index, Duration start, Duration end, String why) async {
-    final native = _player.platform;
-    if (native is! NativePlayer) return;
-    final directory = await recordingsDirectory();
-    final path = p.join(directory.path, 'rec-$id-$index.ts');
-    try {
-      await native.command(['dump-cache', mpvSeconds(start), mpvSeconds(end), path]).timeout(const Duration(seconds: 20));
-    } catch (error) {
-      NetLog.instance.add('dump-cache 失败 $why ${mpvSeconds(start)}-${mpvSeconds(end)} $error');
+  void _queueClip(Duration end) {
+    if (mounted) {
+      _saveRecordingToPhotos = context.read<SettingsStore>().saveRecordingsToPhotos;
     }
-    final file = File(path);
-    final size = await file.exists() ? await file.length() : 0;
-    NetLog.instance.add('dump-cache $why ${mpvSeconds(start)}-${mpvSeconds(end)} ${size}B $path');
-    if (size > 0) {
-      _recordSegments.add(path);
-    } else if (await file.exists()) {
-      await file.delete();
+    if (!recordSpanIsUsable(_recordStart, end)) {
+      NetLog.instance.add('录制太短 ${formatClock(_recordStart)}-${formatClock(end)}');
+      _tell('录制太短');
+      return;
     }
-  }
-
-  Future<File?> _joinSegments(Directory directory) async {
-    final existing = <File>[];
-    for (final path in _recordSegments) {
-      final file = File(path);
-      if (await file.exists() && await file.length() > 0) existing.add(file);
-    }
-    if (existing.isEmpty) return null;
-    if (existing.length == 1) return existing.single;
-    final combined = File(p.join(directory.path, 'rec-$_recordId.ts'));
-    final sink = combined.openWrite();
-    try {
-      for (final file in existing) {
-        await sink.addStream(file.openRead());
-      }
-    } finally {
-      await sink.close();
-    }
-    for (final file in existing) {
-      if (file.path != combined.path && await file.exists()) await file.delete();
-    }
-    final size = await combined.length();
-    NetLog.instance.add('拼接录制 ${existing.length} 段 ${size}B ${combined.path}');
-    return size > 0 ? combined : null;
-  }
-
-  Future<File?> _rereadClip(Directory directory, Duration start, Duration end) async {
-    final headers = playbackHeaders(widget.playback.headers);
-    final target = File(p.join(directory.path, 'rec-$_recordId-reread.mkv'));
-    NetLog.instance.add('重读原地址剪辑 ${mpvSeconds(start)}-${mpvSeconds(end)}');
-    try {
-      await remuxWithMpv(
-        input: _currentUrl,
-        output: target.path,
-        format: 'matroska',
-        copyVideo: true,
-        copyAudio: true,
-        start: start,
+    ClipQueue.instance.enqueue(
+      ClipRequest(
+        title: widget.recordTitle ?? widget.title,
+        episode: widget.recordEpisode,
+        sourceUrl: _currentUrl.isEmpty ? widget.playback.url : _currentUrl,
+        headers: playbackHeaders(widget.playback.headers),
+        start: _recordStart,
         end: end,
-        headers: headers,
-      );
-      final size = await target.length();
-      NetLog.instance.add('重读剪辑 ${size}B ${target.path}');
-      return target;
-    } catch (error) {
-      NetLog.instance.add('重读剪辑失败 $error');
-      if (await target.exists()) await target.delete();
-    }
-    final clip = embyClipUrl(_currentUrl, start);
-    if (clip == null) return null;
-    final serverFile = File(p.join(directory.path, 'rec-$_recordId-server.mp4'));
-    NetLog.instance.add('服务器剪辑 ${NetLog.redact(Uri.parse(clip))}');
-    try {
-      await remuxWithMpv(
-        input: clip,
-        output: serverFile.path,
-        format: 'mp4',
-        copyVideo: true,
-        copyAudio: false,
-        start: Duration.zero,
-        end: end - start,
-        headers: headers,
-      );
-      final size = await serverFile.length();
-      NetLog.instance.add('服务器剪辑 ${size}B ${serverFile.path}');
-      return serverFile;
-    } catch (error) {
-      NetLog.instance.add('服务器剪辑失败 $error');
-      if (await serverFile.exists()) await serverFile.delete();
-      return null;
-    }
+        saveToPhotos: _saveRecordingToPhotos,
+      ),
+    );
+    _tell('正在生成片段，可在下载页查看');
   }
 
   Future<void> _stopRecording() async {
     if (!_recording) return;
     _recordTimer?.cancel();
-    final start = _recordStart;
     final end = _position;
-    final ext = _recordExt;
     if (mounted) setState(() => _recording = false);
-    _enqueueDump(end, why: '停止');
-    try {
-      await _recordJobs;
-      final directory = await recordingsDirectory();
-      var captured = await _joinSegments(directory);
-      var capturedBytes = captured == null ? 0 : await captured.length();
-      if (capturedBytes < 1024 && recordSpanIsUsable(start, end)) {
-        NetLog.instance.add('缓存剪辑只有 ${capturedBytes}B，改从原地址重读');
-        if (captured != null && await captured.exists()) await captured.delete();
-        captured = await _rereadClip(directory, start, end);
-        capturedBytes = captured == null ? 0 : await captured.length();
-      }
-      if (captured == null || capturedBytes <= 0) {
-        NetLog.instance.add('停止录制失败 没有写出文件 0B');
-        _tell('录制文件是空的');
-        return;
-      }
-      var output = captured;
-      final producedExt = p.extension(output.path).replaceAll('.', '').toLowerCase();
-      final finalExt = producedExt == 'ts' ? ext : producedExt;
-      final name = recordingFileName(
-        title: widget.recordTitle ?? widget.title,
-        episode: widget.recordEpisode,
-        start: start,
-        end: end,
-        extension: finalExt.isEmpty ? ext : finalExt,
-      );
-      var dest = p.join(directory.path, name);
-      if (await File(dest).exists()) {
-        dest = p.join(directory.path, '${p.basenameWithoutExtension(name)}-$_recordId.$finalExt');
-      }
-      if (producedExt == 'ts' && finalExt != 'ts') {
-        final remuxed = File(p.join(directory.path, 'rec-$_recordId.$finalExt'));
-        try {
-          await remuxWithMpv(
-            input: output.path,
-            output: remuxed.path,
-            format: finalExt == 'mp4' || finalExt == 'mov' || finalExt == 'm4v' ? 'mp4' : 'matroska',
-            copyVideo: true,
-            copyAudio: true,
-          );
-          await output.delete();
-          output = remuxed;
-          NetLog.instance.add('录制封装 ${await remuxed.length()}B ${remuxed.path}');
-        } catch (error) {
-          NetLog.instance.add('录制封装失败，保留 ts $error');
-          dest = p.join(directory.path, recordingFileName(
-            title: widget.recordTitle ?? widget.title,
-            episode: widget.recordEpisode,
-            start: start,
-            end: end,
-            extension: 'ts',
-          ));
-        }
-      }
-      await output.rename(dest);
-      final saved = await File(dest).length();
-      NetLog.instance.add('停止录制 ${saved}B $dest');
-      final autoSave = mounted && context.read<SettingsStore>().saveRecordingsToPhotos;
-      _tell('已保存 ${p.basename(dest)}');
-      if (autoSave) unawaited(_saveToPhotos(dest));
-    } catch (error) {
-      NetLog.instance.add('停止录制失败 $error');
-      _tell('停止录制失败');
-    } finally {
-      _recordSegments.clear();
-    }
-  }
-
-  Future<void> _saveToPhotos(String path) async {
-    _tell('正在保存到相册');
-    try {
-      final message = await saveRecordingToPhotos(path);
-      _tell(message);
-    } catch (error) {
-      NetLog.instance.add('保存到相册失败 $error');
-      _tell('保存到相册失败');
-    }
+    _queueClip(end);
   }
 
   void _tell(String message) {
@@ -688,15 +504,21 @@ class _PlayerPageState extends State<PlayerPage> {
     _noFrameWatch?.cancel();
     if (_recording) {
       final end = _position;
-      unawaited(() async {
-        try {
-          _enqueueDump(end, why: '离开');
-          await _recordJobs;
-          NetLog.instance.add('离开播放器时已写出 ${_recordSegments.length} 段');
-        } catch (error) {
-          NetLog.instance.add('离开播放器时停止录制失败 $error');
-        }
-      }());
+      _recording = false;
+      if (recordSpanIsUsable(_recordStart, end)) {
+        ClipQueue.instance.enqueue(
+          ClipRequest(
+            title: widget.recordTitle ?? widget.title,
+            episode: widget.recordEpisode,
+            sourceUrl: _currentUrl.isEmpty ? widget.playback.url : _currentUrl,
+            headers: playbackHeaders(widget.playback.headers),
+            start: _recordStart,
+            end: end,
+            saveToPhotos: _saveRecordingToPhotos,
+          ),
+        );
+        NetLog.instance.add('离开播放器时继续生成片段');
+      }
     }
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());

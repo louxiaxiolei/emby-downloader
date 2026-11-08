@@ -6,6 +6,8 @@ import '../emby/playback.dart';
 import '../emby/urls.dart';
 import '../theme.dart';
 import '../ui/player_page.dart';
+import '../downloads/speed.dart';
+import 'clip_queue.dart';
 import 'remux.dart';
 import 'store.dart';
 
@@ -23,7 +25,22 @@ class _RecordingsSectionState extends State<RecordingsSection> {
   @override
   void initState() {
     super.initState();
+    ClipQueue.instance.addListener(_onJobs);
     _reload();
+  }
+
+  @override
+  void dispose() {
+    ClipQueue.instance.removeListener(_onJobs);
+    super.dispose();
+  }
+
+  void _onJobs() {
+    if (!mounted) return;
+    setState(() {});
+    if (ClipQueue.instance.jobs.any((job) => job.state == ClipJobState.saved)) {
+      _reload();
+    }
   }
 
   Future<void> _reload() async {
@@ -54,12 +71,50 @@ class _RecordingsSectionState extends State<RecordingsSection> {
           ],
         ),
         if (_loading)
-          const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: LinearProgressIndicator(minHeight: 2))
-        else if (_files.isEmpty)
+          const Padding(padding: EdgeInsets.symmetric(vertical: 8), child: LinearProgressIndicator(minHeight: 2)),
+        ...ClipQueue.instance.jobs
+            .where((job) => job.state != ClipJobState.saved || !_files.any((file) => file.path == job.path))
+            .map((job) => _job(context, job)),
+        if (!_loading && _files.isEmpty && ClipQueue.instance.jobs.isEmpty)
           Text('还没有录制。播放时点录制，再点一次停止。', style: TextStyle(color: cinema.muted, fontSize: 12))
         else
           ..._files.map((file) => _tile(context, file)),
       ],
+    );
+  }
+
+  Widget _job(BuildContext context, ClipJob job) {
+    final cinema = context.cinema;
+    final failed = job.state == ClipJobState.failed;
+    return Card(
+      margin: const EdgeInsets.only(bottom: 8),
+      child: ListTile(
+        title: Text(job.title, maxLines: 1, overflow: TextOverflow.ellipsis),
+        subtitle: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '${formatClock(job.start)} – ${formatClock(job.end)}',
+              style: TextStyle(color: cinema.muted, fontSize: 12),
+            ),
+            const SizedBox(height: 6),
+            if (job.state == ClipJobState.running)
+              LinearProgressIndicator(value: job.progress <= 0 ? null : job.progress),
+            Text(
+              job.message,
+              style: TextStyle(color: failed ? danger : cinema.text, fontSize: 12),
+            ),
+          ],
+        ),
+        trailing: failed
+            ? IconButton(
+                tooltip: '关闭',
+                onPressed: () => ClipQueue.instance.dismiss(job.id),
+                icon: const Icon(Icons.close),
+              )
+            : null,
+      ),
     );
   }
 

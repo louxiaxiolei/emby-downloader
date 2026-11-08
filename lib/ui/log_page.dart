@@ -1,4 +1,6 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../emby/net_log.dart';
 import '../theme.dart';
@@ -13,6 +15,23 @@ class LogPage extends StatelessWidget {
       appBar: AppBar(
         title: const Text('日志'),
         actions: [
+          TextButton(
+            onPressed: () async {
+              final text = NetLog.instance.exportText();
+              await Clipboard.setData(ClipboardData(text: text.isEmpty ? '还没有请求' : text));
+              if (context.mounted) {
+                ScaffoldMessenger.of(context).showSnackBar(const SnackBar(content: Text('日志已复制')));
+              }
+            },
+            child: const Text('复制'),
+          ),
+          TextButton(
+            onPressed: () {
+              final text = NetLog.instance.exportText();
+              Share.share(text.isEmpty ? '还没有请求' : text, subject: 'Emby 下载日志');
+            },
+            child: const Text('分享'),
+          ),
           TextButton(onPressed: NetLog.instance.clear, child: const Text('清空')),
         ],
       ),

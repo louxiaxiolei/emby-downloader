@@ -7,6 +7,7 @@ import 'session_controller.dart';
 import 'storage/settings_store.dart';
 import 'theme.dart';
 import 'ui/login_page.dart';
+import 'ui/messenger.dart';
 import 'ui/shell_page.dart';
 
 class EmbyApp extends StatelessWidget {
@@ -32,6 +33,7 @@ class EmbyApp extends StatelessWidget {
       child: Builder(
         builder: (context) {
           return MaterialApp(
+        scaffoldMessengerKey: scaffoldMessengerKey,
         title: 'Emby 下载',
         debugShowCheckedModeBanner: false,
         theme: buildTheme(Brightness.light),

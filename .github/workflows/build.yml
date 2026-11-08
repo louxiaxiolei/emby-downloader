@@ -31,6 +31,7 @@ jobs:
           sudo apt-get install -y ffmpeg mpv
           bash tool/remux_sample.sh
           bash tool/record_sample.sh
+          bash tool/emby_server_it.sh
       - name: Seed the Kotlin compiler from Maven Central
         run: |
           set -euo pipefail
