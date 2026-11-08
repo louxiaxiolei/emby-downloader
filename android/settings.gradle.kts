@@ -11,17 +11,9 @@ pluginManagement {
     includeBuild("$flutterSdkPath/packages/flutter_tools/gradle")
 
     repositories {
-        // Maven Central hosts kotlin-compiler-embeddable directly. The Gradle
-        // plugin portal redirects that jar to a GitHub release, which has been
-        // returning 504 and failing the Android build.
-        exclusiveContent {
-            forRepository {
-                mavenCentral()
-            }
-            filter {
-                includeGroup("org.jetbrains.kotlin")
-            }
-        }
+        // CI can drop kotlin-compiler-embeddable here. The Gradle plugin portal
+        // redirects that jar to a GitHub release that has been returning 504.
+        maven { url = uri("${rootDir}/local-m2") }
         google()
         mavenCentral()
         gradlePluginPortal()

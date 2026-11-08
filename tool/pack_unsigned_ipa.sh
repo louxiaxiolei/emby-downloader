@@ -8,7 +8,7 @@ APP_PATH="${1:-build/ios/iphoneos/Runner.app}"
 OUT_PATH="${2:-artifacts/emby-downloader-unsigned.ipa}"
 
 if [[ ! -d "$APP_PATH" ]]; then
-  echo "找不到 $APP_PATH。先运行 flutter build ios --release --no-codesign" >&2
+  echo "找不到 ${APP_PATH} 。先运行 flutter build ios --release --no-codesign" >&2
   exit 1
 fi
 

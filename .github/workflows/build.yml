@@ -30,6 +30,14 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ffmpeg
           bash tool/remux_sample.sh
+      - name: Seed the Kotlin compiler from Maven Central
+        run: |
+          base=android/local-m2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21
+          mkdir -p "$base"
+          curl -fsSL -o "$base/kotlin-compiler-embeddable-2.0.21.pom" \
+            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.pom
+          curl -fsSL -o "$base/kotlin-compiler-embeddable-2.0.21.jar" \
+            https://repo1.maven.org/maven2/org/jetbrains/kotlin/kotlin-compiler-embeddable/2.0.21/kotlin-compiler-embeddable-2.0.21.jar
       - name: Build split APKs
         run: |
           set -euo pipefail
@@ -71,6 +79,8 @@ jobs:
           dir=$(echo "$HOME"/.pub-cache/hosted/pub.dev/media_kit_libs_ios_video-*/ios)
           make -C "$dir"
           find "$dir/Frameworks/.symlinks/mpv" -maxdepth 2 -print
+      - name: Build unsigned iOS
+        run: flutter build ios --release --no-codesign
       - name: Pack unsigned IPA
         run: bash tool/pack_unsigned_ipa.sh build/ios/iphoneos/Runner.app artifacts/emby-downloader.ipa
       - uses: actions/upload-artifact@v4
