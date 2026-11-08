@@ -37,6 +37,14 @@ android {
             signingConfig = signingConfigs.getByName("debug")
         }
     }
+
+    // Compress native libraries inside the APK. libmpv is about 12 MB uncompressed;
+    // leaving every .so stored (the AGP default) pushes the arm64 APK past 24 MB.
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
 }
 
 flutter {
