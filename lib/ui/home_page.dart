@@ -14,6 +14,7 @@ import '../theme.dart';
 import 'browse_page.dart';
 import 'chrome.dart';
 import 'detail_page.dart';
+import 'play.dart';
 import 'widgets.dart';
 
 class LibraryShelf {
@@ -206,11 +207,13 @@ class _HomePageState extends State<HomePage> {
                 resume: _resume,
                 nextUp: _nextUp,
                 shelves: _shelves,
-                image: (item, {String type = 'Primary', int? maxWidth, int? maxHeight}) {
-                  return client?.imageUrl(item, type: type, maxWidth: maxWidth, maxHeight: maxHeight) ?? '';
+                pictures: (item, {required bool wide, int maxWidth = 800}) {
+                  return client?.imageUrls(item, wide: wide, maxWidth: maxWidth) ?? const [];
                 },
+                logo: (item) => client?.imageUrl(item, type: 'Logo', maxWidth: 800) ?? '',
                 headers: client?.headers ?? const {},
                 onOpen: _open,
+                onPlay: (item) => playItem(context, item),
                 onHeroChanged: (item) {
                   _sample(
                     client?.imageUrl(item, type: 'Backdrop', maxWidth: 240) ?? '',
@@ -237,9 +240,11 @@ class HomeView extends StatefulWidget {
     required this.resume,
     required this.nextUp,
     required this.shelves,
-    required this.image,
+    required this.pictures,
+    required this.logo,
     required this.headers,
     required this.onOpen,
+    required this.onPlay,
     required this.onHeroChanged,
     required this.onShelf,
   });
@@ -248,9 +253,11 @@ class HomeView extends StatefulWidget {
   final List<EmbyItem> resume;
   final List<EmbyItem> nextUp;
   final List<LibraryShelf> shelves;
-  final String Function(EmbyItem item, {String type, int? maxWidth, int? maxHeight}) image;
+  final List<String> Function(EmbyItem item, {required bool wide, int maxWidth}) pictures;
+  final String Function(EmbyItem item) logo;
   final Map<String, String> headers;
   final ValueChanged<EmbyItem> onOpen;
+  final ValueChanged<EmbyItem> onPlay;
   final ValueChanged<EmbyItem> onHeroChanged;
   final ValueChanged<LibraryShelf> onShelf;
 
@@ -290,8 +297,8 @@ class _HomeViewState extends State<HomeView> {
                   onTap: () => widget.onOpen(item),
                   child: _HeroCard(
                     item: item,
-                    backdrop: widget.image(item, type: 'Backdrop', maxWidth: 1280),
-                    logo: widget.image(item, type: 'Logo', maxWidth: 800),
+                    backdrop: widget.pictures(item, wide: true, maxWidth: 1280),
+                    logo: widget.logo(item),
                     headers: widget.headers,
                   ),
                 );
@@ -322,18 +329,22 @@ class _HomeViewState extends State<HomeView> {
           _WideShelf(
             title: '继续观看',
             items: widget.resume,
-            image: widget.image,
+            pictures: widget.pictures,
             headers: widget.headers,
             onOpen: widget.onOpen,
+            onPlay: widget.onPlay,
+            playOnTap: true,
             showProgress: true,
           ),
         if (widget.nextUp.isNotEmpty)
           _WideShelf(
             title: '下一集',
             items: widget.nextUp,
-            image: widget.image,
+            pictures: widget.pictures,
             headers: widget.headers,
             onOpen: widget.onOpen,
+            onPlay: widget.onPlay,
+            playOnTap: true,
             showProgress: false,
           ),
         for (final shelf in widget.shelves) ...[
@@ -360,7 +371,7 @@ class _HomeViewState extends State<HomeView> {
                           child: ClipRRect(
                             borderRadius: BorderRadius.circular(16),
                             child: EmbyImage(
-                              url: widget.image(item, type: 'Backdrop', maxWidth: 640),
+                              urls: widget.pictures(item, wide: true, maxWidth: 640),
                               headers: widget.headers,
                             ),
                           ),
@@ -399,7 +410,7 @@ class _HeroCard extends StatelessWidget {
   });
 
   final EmbyItem item;
-  final String backdrop;
+  final List<String> backdrop;
   final String logo;
   final Map<String, String> headers;
 
@@ -412,7 +423,7 @@ class _HeroCard extends StatelessWidget {
     return Stack(
       fit: StackFit.expand,
       children: [
-        EmbyImage(url: backdrop, headers: headers),
+        EmbyImage(urls: backdrop, headers: headers),
         const DecoratedBox(
           decoration: BoxDecoration(
             gradient: LinearGradient(
@@ -473,17 +484,21 @@ class _WideShelf extends StatelessWidget {
   const _WideShelf({
     required this.title,
     required this.items,
-    required this.image,
+    required this.pictures,
     required this.headers,
     required this.onOpen,
+    required this.onPlay,
+    required this.playOnTap,
     required this.showProgress,
   });
 
   final String title;
   final List<EmbyItem> items;
-  final String Function(EmbyItem item, {String type, int? maxWidth, int? maxHeight}) image;
+  final List<String> Function(EmbyItem item, {required bool wide, int maxWidth}) pictures;
   final Map<String, String> headers;
   final ValueChanged<EmbyItem> onOpen;
+  final ValueChanged<EmbyItem> onPlay;
+  final bool playOnTap;
   final bool showProgress;
 
   @override
@@ -507,7 +522,8 @@ class _WideShelf extends StatelessWidget {
                   ? [item.seriesName, episodeCode(item)].whereType<String>().where((p) => p.isNotEmpty).join(' ')
                   : item.name;
               return GestureDetector(
-                onTap: () => onOpen(item),
+                onTap: () => playOnTap ? onPlay(item) : onOpen(item),
+                onLongPress: () => onOpen(item),
                 child: SizedBox(
                   width: 250,
                   child: Column(
@@ -520,7 +536,7 @@ class _WideShelf extends StatelessWidget {
                             fit: StackFit.expand,
                             children: [
                               EmbyImage(
-                                url: image(item, type: 'Backdrop', maxWidth: 700),
+                                urls: pictures(item, wide: true, maxWidth: 700),
                                 headers: headers,
                               ),
                               if (showProgress && fraction != null)

@@ -8,6 +8,7 @@ import 'package:provider/provider.dart';
 
 import '../downloads/speed.dart';
 import '../emby/api.dart';
+import '../emby/net_log.dart';
 import '../emby/playback.dart';
 import '../session_controller.dart';
 import '../theme.dart';
@@ -18,11 +19,13 @@ class PlayerPage extends StatefulWidget {
     required this.title,
     required this.itemId,
     required this.playback,
+    this.tappedAt,
   });
 
   final String title;
   final String itemId;
   final ResolvedPlayback playback;
+  final DateTime? tappedAt;
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -37,6 +40,12 @@ class _PlayerPageState extends State<PlayerPage> {
   var _showChrome = true;
   var _fullscreen = false;
   var _buffering = true;
+  var _bufferPercent = 0.0;
+  var _firstFrame = false;
+  int? _openMs;
+  int? _infoMs;
+  String? _fallbackUrl;
+  String? _playSessionId;
   var _seeking = false;
   var _started = false;
   var _reportedStart = false;
@@ -73,6 +82,19 @@ class _PlayerPageState extends State<PlayerPage> {
         if (!mounted) return;
         setState(() => _buffering = buffering);
       }),
+      _player.stream.bufferingPercentage.listen((value) {
+        if (!mounted) return;
+        setState(() => _bufferPercent = value);
+      }),
+      _player.stream.width.listen((width) {
+        if (width == null || width <= 0 || _firstFrame) return;
+        _firstFrame = true;
+        final total = widget.tappedAt == null ? null : DateTime.now().difference(widget.tappedAt!).inMilliseconds;
+        NetLog.instance.add(
+          '首帧 ${total ?? -1}ms 打开 ${_openMs ?? -1}ms PlaybackInfo ${_infoMs ?? -1}ms',
+        );
+        if (mounted) setState(() {});
+      }),
       _player.stream.tracks.listen((tracks) {
         if (!mounted) return;
         setState(() => _tracks = tracks);
@@ -91,11 +113,66 @@ class _PlayerPageState extends State<PlayerPage> {
       }),
     ]);
     unawaited(_open(widget.playback.url, transcode: widget.playback.playMethod == 'Transcode'));
+    unawaited(_loadPlaybackInfo());
+  }
+
+  Future<void> _loadPlaybackInfo() async {
+    final client = context.read<SessionController>().client;
+    if (client == null) return;
+    final watch = Stopwatch()..start();
+    try {
+      final info = await client.playbackInfo(
+        itemId: widget.itemId,
+        mediaSourceId: widget.playback.mediaSourceId,
+        startTimeTicks: ticksFor(widget.playback.resume ?? Duration.zero),
+      );
+      _infoMs = watch.elapsedMilliseconds;
+      NetLog.instance.add('PlaybackInfo ${_infoMs}ms');
+      if (!mounted || _disposed) return;
+      final resolved = resolvePlayback(
+        base: client.session.base,
+        apiRoot: client.session.apiRoot,
+        accessToken: client.session.accessToken,
+        itemId: widget.itemId,
+        mediaSourceId: widget.playback.mediaSourceId,
+        playbackInfo: info,
+        headers: client.headers,
+        resume: widget.playback.resume,
+      );
+      _fallbackUrl = resolved.transcodeUrl ?? (resolved.playMethod == 'Transcode' ? resolved.url : null);
+      _playSessionId = resolved.playSessionId;
+    } catch (error) {
+      _infoMs = watch.elapsedMilliseconds;
+      NetLog.instance.add('PlaybackInfo 失败 ${_infoMs}ms $error');
+    }
+  }
+
+  Future<void> _tune() async {
+    final native = _player.platform;
+    if (native is! NativePlayer) return;
+    const options = {
+      'hwdec': 'auto',
+      'cache': 'yes',
+      'demuxer-readahead-secs': '2',
+      'demuxer-max-bytes': '32MiB',
+      'network-timeout': '20',
+      'demuxer-lavf-probesize': '1048576',
+      'demuxer-lavf-analyzeduration': '1000000',
+    };
+    for (final entry in options.entries) {
+      try {
+        await native.setProperty(entry.key, entry.value);
+      } catch (error) {
+        NetLog.instance.add('mpv ${entry.key} 失败 $error');
+      }
+    }
   }
 
   Future<void> _open(String url, {required bool transcode}) async {
     _method = transcode ? 'Transcode' : widget.playback.playMethod;
+    final watch = Stopwatch()..start();
     try {
+      await _tune();
       await _player.open(
         Media(
           url,
@@ -103,6 +180,8 @@ class _PlayerPageState extends State<PlayerPage> {
           start: widget.playback.resume,
         ),
       );
+      _openMs = watch.elapsedMilliseconds;
+      NetLog.instance.add('打开播放器 ${_openMs}ms ${transcode ? '转码' : '直连'}');
       if (_disposed) return;
       final resume = widget.playback.resume;
       if (resume != null && resume > Duration.zero && mounted) {
@@ -128,7 +207,7 @@ class _PlayerPageState extends State<PlayerPage> {
   }
 
   Future<void> _onError(String message) async {
-    final fallback = widget.playback.transcodeUrl;
+    final fallback = _fallbackUrl ?? widget.playback.transcodeUrl;
     if (!_started && !_triedTranscode && fallback != null && _method != 'Transcode') {
       _triedTranscode = true;
       if (mounted) {
@@ -168,7 +247,7 @@ class _PlayerPageState extends State<PlayerPage> {
       phase: phase,
       itemId: widget.itemId,
       mediaSourceId: widget.playback.mediaSourceId,
-      playSessionId: widget.playback.playSessionId,
+      playSessionId: _playSessionId ?? widget.playback.playSessionId,
       positionTicks: ticksFor(_player.state.position),
       isPaused: paused,
       playMethod: _method,
@@ -206,7 +285,7 @@ class _PlayerPageState extends State<PlayerPage> {
   void _toggleChrome() {
     setState(() => _showChrome = !_showChrome);
     _chromeTimer?.cancel();
-    if (_showChrome && _player.state.playing) {
+    if (_showChrome && _firstFrame && _player.state.playing) {
       _chromeTimer = Timer(const Duration(seconds: 4), () {
         if (mounted && _player.state.playing) setState(() => _showChrome = false);
       });
@@ -248,7 +327,19 @@ class _PlayerPageState extends State<PlayerPage> {
               ),
             ),
             if (_buffering && _error == null)
-              const Center(child: CircularProgressIndicator(color: brass)),
+              Center(
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const CircularProgressIndicator(color: brass),
+                    const SizedBox(height: 12),
+                    Text(
+                      '缓冲中 ${_bufferPercent.round()}%',
+                      style: const TextStyle(color: ivory, fontSize: 14),
+                    ),
+                  ],
+                ),
+              ),
             if (_error != null)
               Center(
                 child: Padding(
@@ -365,7 +456,7 @@ class _PlayerPageState extends State<PlayerPage> {
         gradient: LinearGradient(
           begin: top ? Alignment.topCenter : Alignment.bottomCenter,
           end: top ? Alignment.bottomCenter : Alignment.topCenter,
-          colors: const [Color(0xCC000000), Color(0x00000000)],
+          colors: const [Color(0xF2000000), Color(0x00000000)],
         ),
       ),
       child: SafeArea(child: child),

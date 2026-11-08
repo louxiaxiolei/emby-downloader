@@ -10,7 +10,7 @@ import '../session_controller.dart';
 import '../theme.dart';
 import 'chrome.dart';
 import 'home_page.dart';
-import 'player_page.dart';
+import 'play.dart';
 import 'widgets.dart';
 
 class DetailPage extends StatefulWidget {
@@ -28,12 +28,12 @@ class _DetailPageState extends State<DetailPage> {
   List<EmbyItem> _seasons = const [];
   List<EmbyItem> _episodes = const [];
   List<EmbyItem> _similar = const [];
+  EmbyItem? _upNext;
   var _seasonIndex = 0;
   var _loading = true;
   String? _error;
   var _sourceIndex = 0;
   var _downloading = false;
-  var _playing = false;
 
   @override
   void initState() {
@@ -53,11 +53,13 @@ class _DetailPageState extends State<DetailPage> {
       final item = await client.item(widget.itemId);
       final seasons = item.type == 'Series' ? await client.seasons(item.id) : null;
       final similar = await _quiet(() => client.similar(item.id));
+      final next = item.type == 'Series' ? await _quiet(() => client.nextUp(seriesId: item.id)) : const <EmbyItem>[];
       if (!mounted) return;
       setState(() {
         _item = item;
         _seasons = seasons?.items ?? const [];
         _similar = similar;
+        _upNext = next.isEmpty ? null : next.first;
         _loading = false;
       });
       if (_seasons.isNotEmpty) await _loadEpisodes(0);
@@ -96,56 +98,6 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
-  Future<void> _play(EmbyItem item) async {
-    if (_playing) return;
-    final client = context.read<SessionController>().client;
-    if (client == null) return;
-    final source = item.mediaSources.isEmpty
-        ? null
-        : item.mediaSources[_sourceIndex.clamp(0, item.mediaSources.length - 1)];
-    setState(() => _playing = true);
-    try {
-      Map<String, dynamic>? info;
-      try {
-        info = await client.playbackInfo(
-          itemId: item.id,
-          mediaSourceId: source?.id,
-          startTimeTicks: item.playbackPositionTicks ?? 0,
-        );
-      } on EmbyUnauthorized {
-        rethrow;
-      } catch (_) {
-        info = null;
-      }
-      final playback = resolvePlayback(
-        base: client.session.base,
-        apiRoot: client.session.apiRoot,
-        accessToken: client.session.accessToken,
-        itemId: item.id,
-        mediaSourceId: source?.id,
-        container: source?.container,
-        playbackInfo: info,
-        knownStreams: source?.streams ?? const [],
-        resume: resumePosition(item.playbackPositionTicks, item.runTimeTicks),
-        headers: client.headers,
-      );
-      if (!mounted) return;
-      await Navigator.of(context).push(
-        MaterialPageRoute<void>(
-          builder: (_) => PlayerPage(title: mediaTitle(item), itemId: item.id, playback: playback),
-        ),
-      );
-    } on EmbyUnauthorized {
-      if (!mounted) return;
-      await context.read<SessionController>().invalidate();
-      if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
-    } catch (error) {
-      if (mounted) await showMessage(context, friendlyError(error));
-    } finally {
-      if (mounted) setState(() => _playing = false);
-    }
-  }
-
   Future<void> _download(EmbyItem item) async {
     if (_downloading) return;
     final client = context.read<SessionController>().client;
@@ -177,9 +129,13 @@ class _DetailPageState extends State<DetailPage> {
       return Scaffold(body: LoadError(message: _error!, onRetry: _load));
     }
     if (item == null) return const Scaffold(body: EmptyHint(message: '找不到这个条目'));
-    final backdrop = client?.imageUrl(item, type: 'Backdrop', maxWidth: 1280) ?? '';
+    final backdrops = client?.imageUrls(item, wide: true, maxWidth: 1280) ?? const <String>[];
     final logo = client?.imageUrl(item, type: 'Logo', maxWidth: 800) ?? '';
-    final resume = resumePosition(item.playbackPositionTicks, item.runTimeTicks);
+    final playTarget = item.type == 'Series' ? (_upNext ?? (_episodes.isNotEmpty ? _episodes.first : null)) : item;
+    final playCode = playTarget == null ? '' : (episodeCode(playTarget) ?? '');
+    final resume = item.type == 'Series'
+        ? resumePosition(playTarget?.playbackPositionTicks, playTarget?.runTimeTicks)
+        : resumePosition(item.playbackPositionTicks, item.runTimeTicks);
     return Scaffold(
       body: CustomScrollView(
         slivers: [
@@ -195,7 +151,7 @@ class _DetailPageState extends State<DetailPage> {
               background: Stack(
                 fit: StackFit.expand,
                 children: [
-                  EmbyImage(url: backdrop.isEmpty ? (client?.imageUrl(item, maxWidth: 800) ?? '') : backdrop, headers: client?.headers ?? const {}),
+                  EmbyImage(urls: backdrops, headers: client?.headers ?? const {}),
                   const DecoratedBox(
                     decoration: BoxDecoration(
                       gradient: LinearGradient(
@@ -238,13 +194,15 @@ class _DetailPageState extends State<DetailPage> {
                   if ((item.overview ?? '').isNotEmpty)
                     Text(item.overview!, style: TextStyle(height: 1.5, color: cinema.text)),
                   const SizedBox(height: 16),
-                  if (item.canDownload) ...[
+                  if (playTarget != null && playTarget.canDownload) ...[
                     FilledButton.icon(
-                      onPressed: _playing ? null : () => _play(item),
-                      icon: _playing
-                          ? const SizedBox(width: 18, height: 18, child: CircularProgressIndicator(strokeWidth: 2))
-                          : const Icon(Icons.play_arrow_rounded),
-                      label: Text(resume == null ? '播放' : '继续播放'),
+                      onPressed: () => playItem(context, playTarget),
+                      icon: const Icon(Icons.play_arrow_rounded),
+                      label: Text(
+                        item.type == 'Series'
+                            ? (resume == null ? '播放${playCode.isEmpty ? '' : ' $playCode'}' : '继续播放${playCode.isEmpty ? '' : ' $playCode'}')
+                            : (resume == null ? '播放' : '继续播放'),
+                      ),
                     ),
                     const SizedBox(height: 8),
                     OutlinedButton.icon(
@@ -408,7 +366,7 @@ class _DetailPageState extends State<DetailPage> {
           width: 112,
           height: 64,
           child: EmbyImage(
-            url: client?.imageUrl(episode, type: 'Thumb', maxWidth: 320) ?? '',
+            urls: client?.imageUrls(episode, wide: false, maxWidth: 400) ?? const [],
             headers: client?.headers ?? const {},
           ),
         ),
@@ -424,11 +382,19 @@ class _DetailPageState extends State<DetailPage> {
                 LinearProgressIndicator(value: fraction, minHeight: 3),
               ],
             ),
-      onTap: () {
-        Navigator.of(context).push(
-          MaterialPageRoute<void>(builder: (_) => DetailPage(itemId: episode.id, hint: episode)),
-        );
-      },
+      trailing: IconButton(
+        tooltip: '详情',
+        onPressed: () => _openEpisode(episode),
+        icon: const Icon(Icons.info_outline),
+      ),
+      onTap: () => playItem(context, episode),
+      onLongPress: () => _openEpisode(episode),
+    );
+  }
+
+  void _openEpisode(EmbyItem episode) {
+    Navigator.of(context).push(
+      MaterialPageRoute<void>(builder: (_) => DetailPage(itemId: episode.id, hint: episode)),
     );
   }
 }

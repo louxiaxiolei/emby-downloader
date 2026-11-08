@@ -3,6 +3,7 @@ import 'dart:ui';
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
 
+import '../emby/net_log.dart';
 import '../theme.dart';
 
 class GlassButton extends StatelessWidget {
@@ -36,34 +37,71 @@ class GlassButton extends StatelessWidget {
   }
 }
 
-class EmbyImage extends StatelessWidget {
+class EmbyImage extends StatefulWidget {
   const EmbyImage({
     super.key,
-    required this.url,
+    this.url = '',
+    this.urls = const [],
     this.headers = const {},
     this.fit = BoxFit.cover,
   });
 
   final String url;
+  final List<String> urls;
   final Map<String, String> headers;
   final BoxFit fit;
 
   @override
+  State<EmbyImage> createState() => _EmbyImageState();
+}
+
+class _EmbyImageState extends State<EmbyImage> {
+  var _index = 0;
+
+  List<String> get _urls {
+    if (widget.urls.isNotEmpty) return widget.urls;
+    if (widget.url.isNotEmpty) return [widget.url];
+    return const [];
+  }
+
+  @override
+  void didUpdateWidget(EmbyImage oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.url != widget.url || oldWidget.urls != widget.urls) {
+      _index = 0;
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final cinema = context.cinema;
-    if (url.isEmpty) {
-      return ColoredBox(color: cinema.dark ? const Color(0xFF2A2E36) : const Color(0xFFD5D0C6));
-    }
-    return CachedNetworkImage(
-      imageUrl: url,
-      httpHeaders: headers,
-      fit: fit,
-      fadeInDuration: const Duration(milliseconds: 220),
-      placeholder: (context, url) => ColoredBox(color: cinema.line.withValues(alpha: 0.4)),
-      errorWidget: (context, url, error) => ColoredBox(
-        color: cinema.line.withValues(alpha: 0.45),
+    final urls = _urls;
+    if (urls.isEmpty || _index >= urls.length) {
+      return ColoredBox(
+        color: cinema.dark ? const Color(0xFF2A2E36) : const Color(0xFFD5D0C6),
         child: Icon(Icons.image_not_supported_outlined, color: cinema.muted),
-      ),
+      );
+    }
+    final current = urls[_index];
+    return CachedNetworkImage(
+      imageUrl: current,
+      httpHeaders: widget.headers,
+      fit: widget.fit,
+      fadeInDuration: const Duration(milliseconds: 180),
+      placeholder: (context, url) => ColoredBox(color: cinema.line.withValues(alpha: 0.35)),
+      errorWidget: (context, url, error) {
+        NetLog.instance.add('图片失败 ${NetLog.redact(Uri.parse(url))} $error');
+        final next = _index + 1;
+        if (next < urls.length) {
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (mounted && _index == next - 1) setState(() => _index = next);
+          });
+        }
+        return ColoredBox(
+          color: cinema.dark ? const Color(0xFF2A2E36) : const Color(0xFFD5D0C6),
+          child: Icon(Icons.broken_image_outlined, color: cinema.muted),
+        );
+      },
     );
   }
 }

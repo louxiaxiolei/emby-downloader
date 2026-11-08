@@ -176,6 +176,12 @@ class EmbyItem {
     this.primaryTag,
     this.backdropTag,
     this.logoTag,
+    this.thumbTag,
+    this.parentThumbItemId,
+    this.parentThumbImageTag,
+    this.parentBackdropItemId,
+    this.parentBackdropTag,
+    this.seriesPrimaryImageTag,
     this.communityRating,
     this.runTimeTicks,
     this.genres = const [],
@@ -208,6 +214,12 @@ class EmbyItem {
   final String? primaryTag;
   final String? backdropTag;
   final String? logoTag;
+  final String? thumbTag;
+  final String? parentThumbItemId;
+  final String? parentThumbImageTag;
+  final String? parentBackdropItemId;
+  final String? parentBackdropTag;
+  final String? seriesPrimaryImageTag;
   final double? communityRating;
   final int? runTimeTicks;
   final List<String> genres;
@@ -282,8 +294,17 @@ class EmbyItem {
       if (first is String) backdrop = first;
     }
     String? logo;
-    if (imageTags is Map && imageTags['Logo'] is String) {
-      logo = imageTags['Logo'] as String;
+    String? thumb;
+    if (imageTags is Map) {
+      if (imageTags['Logo'] is String) logo = imageTags['Logo'] as String;
+      if (imageTags['Thumb'] is String) thumb = imageTags['Thumb'] as String;
+    }
+    final parentBackdrops = json['ParentBackdropImageTags'];
+    String? parentBackdrop;
+    if (parentBackdrops is List && parentBackdrops.isNotEmpty && parentBackdrops.first is String) {
+      parentBackdrop = parentBackdrops.first as String;
+    } else if (parentBackdrops is String && parentBackdrops.isNotEmpty) {
+      parentBackdrop = parentBackdrops;
     }
     final userData = json['UserData'];
     int? playbackTicks;
@@ -311,6 +332,12 @@ class EmbyItem {
       primaryTag: primary,
       backdropTag: backdrop,
       logoTag: logo,
+      thumbTag: thumb,
+      parentThumbItemId: json['ParentThumbItemId'] as String?,
+      parentThumbImageTag: json['ParentThumbImageTag'] as String?,
+      parentBackdropItemId: json['ParentBackdropItemId'] as String?,
+      parentBackdropTag: parentBackdrop,
+      seriesPrimaryImageTag: json['SeriesPrimaryImageTag'] as String?,
       communityRating: (json['CommunityRating'] as num?)?.toDouble(),
       runTimeTicks: (json['RunTimeTicks'] as num?)?.toInt(),
       genres: [

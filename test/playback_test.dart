@@ -2,6 +2,7 @@ import 'package:emby_downloader/downloads/queue.dart';
 import 'package:emby_downloader/downloads/speed.dart';
 import 'package:emby_downloader/emby/models.dart';
 import 'package:emby_downloader/emby/playback.dart';
+import 'package:emby_downloader/emby/urls.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 void main() {
@@ -178,6 +179,54 @@ void main() {
     expect(resumePosition(120000000, null), const Duration(seconds: 12));
     expect(resumePosition(5 * 10000000, null), isNull);
     expect(resumePosition(105 * 10000000, 110 * 10000000), isNull);
+  });
+
+  test('episode posters use primary art, then the parent and the series', () {
+    final episode = EmbyItem.fromJson({
+      'Id': 'ep',
+      'Name': '第一话',
+      'Type': 'Episode',
+      'SeriesId': 'series',
+      'ImageTags': {'Primary': 'p1'},
+      'ParentThumbItemId': 'season',
+      'ParentThumbImageTag': 't1',
+      'SeriesPrimaryImageTag': 's1',
+    });
+    final posters = artworkUrls(
+      apiRoot: 'http://192.168.1.10:8096/emby',
+      item: episode,
+      wide: false,
+      maxWidth: 400,
+      accessToken: 'tok',
+    );
+    expect(posters.first, contains('/Items/ep/Images/Primary'));
+    expect(posters.first, contains('tag=p1'));
+    expect(posters.first, contains('api_key=tok'));
+    expect(posters.first, isNot(contains('/Images/Thumb')));
+    expect(
+      posters.any((url) => url.contains('/Items/season/Images/Thumb') && url.contains('tag=t1')),
+      isTrue,
+    );
+    expect(
+      posters.any((url) => url.contains('/Items/series/Images/Primary') && url.contains('tag=s1')),
+      isTrue,
+    );
+    expect(posters.any((url) => url.contains('/Items/ep/Images/Primary') && !url.contains('tag=')), isTrue);
+
+    final series = EmbyItem.fromJson({
+      'Id': 'series',
+      'Name': '一拳超人',
+      'Type': 'Series',
+      'ImageTags': {'Primary': 'sp'},
+    });
+    final wide = artworkUrls(
+      apiRoot: 'http://192.168.1.10:8096/emby',
+      item: series,
+      wide: true,
+      accessToken: 'tok',
+    );
+    expect(wide.first, contains('/Items/series/Images/Primary'));
+    expect(wide.first, contains('tag=sp'));
   });
 
   test('device profile asks for the original and offers HLS', () {

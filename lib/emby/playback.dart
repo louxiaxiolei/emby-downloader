@@ -128,6 +128,35 @@ String withApiKey(String url, String accessToken) {
   ).toString();
 }
 
+/// Opens the original file immediately. PlaybackInfo is not required to start.
+ResolvedPlayback instantPlayback({
+  required String apiRoot,
+  required String accessToken,
+  required EmbyItem item,
+  Map<String, String> headers = const {},
+}) {
+  final source = item.mediaSources.isEmpty ? null : item.mediaSources.first;
+  final sourceId = source != null && source.id.isNotEmpty ? source.id : '';
+  final url = withApiKey(
+    staticStreamUri(
+      apiRoot: apiRoot,
+      itemId: item.id,
+      accessToken: accessToken,
+      mediaSourceId: sourceId,
+      container: null,
+    ).toString(),
+    accessToken,
+  );
+  return ResolvedPlayback(
+    url: url,
+    playMethod: 'DirectPlay',
+    headers: headers,
+    playSessionId: 'play-${item.id}',
+    mediaSourceId: sourceId.isEmpty ? null : sourceId,
+    resume: resumePosition(item.playbackPositionTicks, item.runTimeTicks),
+  );
+}
+
 /// Picks an original-file URL when PlaybackInfo allows it, otherwise HLS.
 ResolvedPlayback resolvePlayback({
   required String base,

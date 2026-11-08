@@ -85,18 +85,20 @@ class EmbyClient {
     return _getPage('/Shows/$seriesId/Episodes', {
       'UserId': session.userId,
       'SeasonId': seasonId,
-      'Fields':
-          'Overview,MediaSources,MediaStreams,Path,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,RunTimeTicks,CommunityRating',
+      'Fields': 'Overview,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,SeriesId,RunTimeTicks,CommunityRating,$imageFields',
     });
   }
 
   static const detailFields =
-      'Overview,Genres,People,MediaSources,MediaStreams,Path,OfficialRating,CommunityRating,CriticRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,ProductionLocations,OriginalTitle';
+      'Overview,Genres,People,MediaSources,MediaStreams,Path,OfficialRating,CommunityRating,CriticRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,ProductionLocations,OriginalTitle,$imageFields';
 
   /// Home rows must not ask for MediaSources or People. On a large library
   /// that makes Emby open every file, and the home spinner waits on it.
+  static const imageFields =
+      'ImageTags,BackdropImageTags,ParentThumbItemId,ParentThumbImageTag,ParentBackdropItemId,ParentBackdropImageTags,SeriesPrimaryImageTag';
+
   static const listFields =
-      'Overview,Genres,OfficialRating,CommunityRating,CriticRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,ProductionLocations';
+      'Overview,Genres,OfficialRating,CommunityRating,CriticRating,RunTimeTicks,ProductionYear,PremiereDate,ChildCount,IndexNumber,ParentIndexNumber,SeriesName,SeasonName,ProductionLocations,$imageFields';
 
   Future<List<EmbyItem>> featured() async {
     final page = await _getPage('/Users/${session.userId}/Items', {
@@ -123,10 +125,11 @@ class EmbyClient {
     return page.items;
   }
 
-  Future<List<EmbyItem>> nextUp() async {
+  Future<List<EmbyItem>> nextUp({String? seriesId}) async {
     final page = await _getPage('/Shows/NextUp', {
       'UserId': session.userId,
       'Limit': '12',
+      if (seriesId != null && seriesId.isNotEmpty) 'SeriesId': seriesId,
       'Fields': listFields,
       'ImageTypeLimit': '1',
       'EnableImageTypes': 'Primary,Backdrop,Thumb',
@@ -235,6 +238,16 @@ class EmbyClient {
     if (response.statusCode >= 400) {
       throw EmbyException('退出登录失败（${response.statusCode}）', statusCode: response.statusCode);
     }
+  }
+
+  List<String> imageUrls(EmbyItem item, {required bool wide, int maxWidth = 800}) {
+    return artworkUrls(
+      apiRoot: session.apiRoot,
+      item: item,
+      wide: wide,
+      maxWidth: maxWidth,
+      accessToken: session.accessToken,
+    );
   }
 
   String imageUrl(

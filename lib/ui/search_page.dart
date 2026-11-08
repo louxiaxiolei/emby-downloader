@@ -136,7 +136,7 @@ class _SearchPageState extends State<SearchPage> {
                 child: ClipRRect(
                   borderRadius: BorderRadius.circular(12),
                   child: EmbyImage(
-                    url: client?.imageUrl(item, maxWidth: 300) ?? '',
+                    urls: client?.imageUrls(item, wide: false, maxWidth: 300) ?? const [],
                     headers: client?.headers ?? const {},
                   ),
                 ),

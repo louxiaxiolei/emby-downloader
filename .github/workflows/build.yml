@@ -24,15 +24,20 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build apk --release --split-per-abi
+      - name: Name release APKs
+        run: |
+          mkdir -p artifacts
+          cp build/app/outputs/flutter-apk/app-arm64-v8a-release.apk artifacts/emby-downloader.apk
+          cp build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk artifacts/emby-downloader-armeabi-v7a.apk
       - uses: actions/upload-artifact@v4
         with:
-          name: emby-downloader-arm64-v8a
-          path: build/app/outputs/flutter-apk/app-arm64-v8a-release.apk
+          name: emby-downloader-apk
+          path: artifacts/emby-downloader.apk
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: emby-downloader-armeabi-v7a
-          path: build/app/outputs/flutter-apk/app-armeabi-v7a-release.apk
+          name: emby-downloader-armeabi-v7a-apk
+          path: artifacts/emby-downloader-armeabi-v7a.apk
           if-no-files-found: error
 
   ios-unsigned-ipa:
@@ -47,14 +52,14 @@ jobs:
       - run: flutter pub get
       - run: flutter build ios --release --no-codesign
       - name: Pack unsigned IPA
-        run: bash tool/pack_unsigned_ipa.sh build/ios/iphoneos/Runner.app artifacts/emby-downloader-unsigned.ipa
+        run: bash tool/pack_unsigned_ipa.sh build/ios/iphoneos/Runner.app artifacts/emby-downloader.ipa
       - uses: actions/upload-artifact@v4
         with:
-          name: emby-downloader-ios-unsigned-ipa
-          path: artifacts/emby-downloader-unsigned.ipa
+          name: emby-downloader-ipa
+          path: artifacts/emby-downloader.ipa
           if-no-files-found: error
       - name: Report IPA size
-        run: ls -lh artifacts/emby-downloader-unsigned.ipa
+        run: ls -lh artifacts/emby-downloader.ipa
 
   release:
     needs: [android, ios-unsigned-ipa]
@@ -73,14 +78,17 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-          files=()
-          while IFS= read -r -d '' f; do
-            files+=("$f")
-          done < <(find dist -type f \( -name '*.apk' -o -name '*.ipa' \) -print0)
-          test "${#files[@]}" -ge 3
+          mkdir -p out
+          ipa="$(find dist -type f -name 'emby-downloader.ipa' -print -quit)"
+          apk="$(find dist -type f -name 'emby-downloader.apk' -print -quit)"
+          v7="$(find dist -type f -name 'emby-downloader-armeabi-v7a.apk' -print -quit)"
+          test -n "$ipa" && test -n "$apk"
+          cp "$ipa" out/emby-downloader.ipa
+          cp "$apk" out/emby-downloader.apk
+          if [ -n "$v7" ]; then cp "$v7" out/emby-downloader-armeabi-v7a.apk; fi
           gh release delete continuous --yes --cleanup-tag || true
-          gh release create continuous "${files[@]}" \
+          gh release create continuous out/* \
             --target "$GITHUB_SHA" \
             --prerelease \
             --title "Continuous build" \
-            --notes "Unsigned iOS IPA plus split Android APKs from main. The IPA is built with flutter build ios --release --no-codesign and is a zip of Payload/Runner.app."
+            --notes "Unsigned iOS IPA (emby-downloader.ipa) and arm64 APK (emby-downloader.apk). The IPA is built with flutter build ios --release --no-codesign and is a zip of Payload/Runner.app."

@@ -171,6 +171,95 @@ Uri imageUri({
   });
 }
 
+/// Ordered image URLs for an item.
+///
+/// Episode primary art is `ImageTags.Primary` on `/Images/Primary`, not Thumb.
+/// Shelves prefer a backdrop, then a thumb, then the parent or series image.
+/// A copy without `tag` is included so a server that ignores tags still works.
+List<String> artworkUrls({
+  required String apiRoot,
+  required EmbyItem item,
+  required bool wide,
+  int maxWidth = 800,
+  String? accessToken,
+}) {
+  final shots = <({String id, String type, String? tag, int? index})>[];
+  void add(String? id, String type, String? tag, {int? index}) {
+    if (id == null || id.isEmpty) return;
+    final key = '$id|$type|${tag ?? ''}|${index ?? ''}';
+    if (shots.any((shot) => '${shot.id}|${shot.type}|${shot.tag ?? ''}|${shot.index ?? ''}' == key)) {
+      return;
+    }
+    shots.add((id: id, type: type, tag: tag, index: index));
+  }
+
+  if (wide && item.backdropTag != null) {
+    add(item.id, 'Backdrop', item.backdropTag, index: 0);
+  }
+  if (!wide && item.primaryTag != null) add(item.id, 'Primary', item.primaryTag);
+  if (item.thumbTag != null) add(item.id, 'Thumb', item.thumbTag);
+  if (wide && item.primaryTag != null) add(item.id, 'Primary', item.primaryTag);
+  if (item.parentBackdropTag != null) {
+    add(item.parentBackdropItemId ?? item.seriesId, 'Backdrop', item.parentBackdropTag, index: 0);
+  }
+  if (item.parentThumbImageTag != null) {
+    add(item.parentThumbItemId ?? item.seriesId ?? item.seasonId, 'Thumb', item.parentThumbImageTag);
+  }
+  if (item.seriesPrimaryImageTag != null) add(item.seriesId, 'Primary', item.seriesPrimaryImageTag);
+  add(item.id, 'Primary', null);
+  add(item.id, 'Thumb', null);
+  add(item.seriesId, 'Primary', null);
+
+  final urls = <String>[];
+  for (final shot in shots) {
+    final withTag = _artworkUri(
+      apiRoot: apiRoot,
+      itemId: shot.id,
+      type: shot.type,
+      tag: shot.tag,
+      maxWidth: maxWidth,
+      index: shot.index,
+      accessToken: accessToken,
+    );
+    urls.add(withTag);
+    if (shot.tag != null && shot.tag!.isNotEmpty) {
+      urls.add(
+        _artworkUri(
+          apiRoot: apiRoot,
+          itemId: shot.id,
+          type: shot.type,
+          tag: null,
+          maxWidth: maxWidth,
+          index: shot.index,
+          accessToken: accessToken,
+        ),
+      );
+    }
+  }
+  return urls;
+}
+
+String _artworkUri({
+  required String apiRoot,
+  required String itemId,
+  required String type,
+  required String? tag,
+  required int maxWidth,
+  required int? index,
+  required String? accessToken,
+}) {
+  final uri = imageUri(
+    apiRoot: apiRoot,
+    itemId: itemId,
+    type: type,
+    tag: tag,
+    maxWidth: maxWidth,
+    index: index,
+  );
+  if (accessToken == null || accessToken.isEmpty) return uri.toString();
+  return uri.replace(queryParameters: {...uri.queryParameters, 'api_key': accessToken}).toString();
+}
+
 String? cleanContainer(String? container) {
   if (container == null) return null;
   final token = container.split(RegExp(r'[,;\s]')).first.trim().toLowerCase();
