@@ -6,9 +6,14 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 
 import '../downloads/download_service.dart';
+import '../downloads/speed.dart';
+import '../emby/models.dart';
+import '../emby/playback.dart';
 import '../emby/urls.dart';
+import '../session_controller.dart';
 import '../storage/settings_store.dart';
 import '../theme.dart';
+import 'player_page.dart';
 import 'widgets.dart';
 
 class DownloadsPage extends StatelessWidget {
@@ -100,7 +105,6 @@ class _LiveTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final downloads = context.read<DownloadService>();
-    final progress = item.progress.clamp(0.0, 1.0);
     final showBar = item.status == TaskStatus.running || item.status == TaskStatus.paused;
     final subtitle = [
       _statusLabel(item),
@@ -121,9 +125,14 @@ class _LiveTile extends StatelessWidget {
             Text(subtitle, style: const TextStyle(color: muted, fontSize: 12)),
             if (showBar) ...[
               const SizedBox(height: 8),
-              LinearProgressIndicator(value: item.progress <= 0 ? null : progress),
+              LinearProgressIndicator(
+                value: progressBarValue(item.progress),
+                color: brass,
+                backgroundColor: line,
+                minHeight: 4,
+              ),
               const SizedBox(height: 4),
-              Text('${(progress * 100).toStringAsFixed(0)}%', style: const TextStyle(color: muted, fontSize: 12)),
+              Text(progressLabel(item.progress), style: const TextStyle(color: muted, fontSize: 12)),
             ],
             Row(
               mainAxisAlignment: MainAxisAlignment.end,
@@ -178,12 +187,7 @@ class _SavedTile extends StatelessWidget {
           children: [
             IconButton(
               tooltip: '播放',
-              onPressed: main.kind == 'video'
-                  ? () async {
-                      final message = await context.read<DownloadService>().openFile(main);
-                      if (message != null && context.mounted) await showMessage(context, message);
-                    }
-                  : null,
+              onPressed: main.kind == 'video' ? () => _playSaved(context, files) : null,
               icon: const Icon(Icons.play_arrow),
             ),
             IconButton(
@@ -211,6 +215,64 @@ class _SavedTile extends StatelessWidget {
       ),
     );
   }
+}
+
+Future<void> _playSaved(BuildContext context, List<LocalFile> group) async {
+  final downloads = context.read<DownloadService>();
+  final video = group.where((file) => file.kind == 'video');
+  final main = video.isEmpty ? group.first : video.first;
+  final path = await downloads.readableFilePath(main);
+  if (!context.mounted) return;
+  if (path == null) {
+    final message = await downloads.openFile(main);
+    if (message != null && context.mounted) await showMessage(context, message);
+    return;
+  }
+  final subtitles = <PlaybackSubtitle>[];
+  for (final file in group) {
+    if (file.kind != 'subtitle') continue;
+    final subtitlePath = await downloads.readableFilePath(file);
+    if (subtitlePath == null) continue;
+    subtitles.add(
+      PlaybackSubtitle(
+        title: file.title.isEmpty ? file.filename : file.title,
+        url: Uri.file(subtitlePath).toString(),
+      ),
+    );
+  }
+  if (!context.mounted) return;
+  final client = context.read<SessionController>().client;
+  Duration? resume;
+  if (client != null && main.itemId.isNotEmpty) {
+    try {
+      final item = await client.item(main.itemId);
+      resume = resumePosition(item.playbackPositionTicks, item.runTimeTicks);
+    } on EmbyUnauthorized {
+      if (context.mounted) {
+        await context.read<SessionController>().invalidate();
+        if (context.mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+      }
+      return;
+    } catch (_) {}
+  }
+  if (!context.mounted) return;
+  await Navigator.of(context).push(
+    MaterialPageRoute<void>(
+      builder: (_) => PlayerPage(
+        title: main.title.isEmpty ? main.filename : main.title,
+        itemId: main.itemId,
+        playback: ResolvedPlayback(
+          url: Uri.file(path).toString(),
+          playMethod: 'DirectPlay',
+          headers: client?.headers ?? const {},
+          playSessionId: main.itemId.isEmpty ? null : 'local-${main.itemId}',
+          mediaSourceId: main.itemId,
+          subtitles: subtitles,
+          resume: resume,
+        ),
+      ),
+    ),
+  );
 }
 
 String _statusLabel(LiveDownload item) {

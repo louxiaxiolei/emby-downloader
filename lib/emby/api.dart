@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 import 'package:http/io_client.dart';
 
 import 'models.dart';
+import 'playback.dart';
 import 'urls.dart';
 
 http.Client createHttpClient({required bool allowBadCertificate}) {
@@ -100,6 +101,56 @@ class EmbyClient {
     });
   }
 
+  Future<Map<String, dynamic>> playbackInfo({
+    required String itemId,
+    String? mediaSourceId,
+    int startTimeTicks = 0,
+  }) {
+    return _postObject(
+      '/Items/$itemId/PlaybackInfo',
+      {
+        'UserId': session.userId,
+        'MaxStreamingBitrate': '140000000',
+        'StartTimeTicks': '$startTimeTicks',
+        'AutoOpenLiveStream': 'true',
+        if (mediaSourceId != null && mediaSourceId.isNotEmpty) 'MediaSourceId': mediaSourceId,
+      },
+      {'DeviceProfile': embyDirectPlayProfile()},
+    );
+  }
+
+  Future<void> reportPlayback({
+    required String phase,
+    required String itemId,
+    String? mediaSourceId,
+    String? playSessionId,
+    required int positionTicks,
+    required bool isPaused,
+    required String playMethod,
+    String? eventName,
+  }) async {
+    final path = switch (phase) {
+      'start' => '/Sessions/Playing',
+      'progress' => '/Sessions/Playing/Progress',
+      'stop' => '/Sessions/Playing/Stopped',
+      _ => '/Sessions/Playing/Progress',
+    };
+    try {
+      await _postIgnore(path, {
+        'ItemId': itemId,
+        if (mediaSourceId != null && mediaSourceId.isNotEmpty) 'MediaSourceId': mediaSourceId,
+        if (playSessionId != null && playSessionId.isNotEmpty) 'PlaySessionId': playSessionId,
+        'PositionTicks': positionTicks,
+        'IsPaused': isPaused,
+        'CanSeek': true,
+        'PlayMethod': playMethod,
+        if (eventName != null) 'EventName': eventName,
+      });
+    } catch (_) {
+      // A failed progress report should not stop playback.
+    }
+  }
+
   Future<void> logout() async {
     final response = await _http
         .post(
@@ -150,6 +201,35 @@ class EmbyClient {
         .get(apiUri(session.apiRoot, path, query), headers: headers)
         .timeout(const Duration(seconds: 25));
     return _decodeObject(response);
+  }
+
+  Future<Map<String, dynamic>> _postObject(
+    String path,
+    Map<String, String> query,
+    Map<String, dynamic> body,
+  ) async {
+    final response = await _http
+        .post(
+          apiUri(session.apiRoot, path, query),
+          headers: {...headers, 'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 25));
+    return _decodeObject(response);
+  }
+
+  Future<void> _postIgnore(String path, Map<String, dynamic> body) async {
+    final response = await _http
+        .post(
+          apiUri(session.apiRoot, path),
+          headers: {...headers, 'Content-Type': 'application/json'},
+          body: jsonEncode(body),
+        )
+        .timeout(const Duration(seconds: 15));
+    if (response.statusCode == 401) throw EmbyUnauthorized();
+    if (response.statusCode >= 400) {
+      throw EmbyException('播放进度没有报上去（${response.statusCode}）', statusCode: response.statusCode);
+    }
   }
 }
 

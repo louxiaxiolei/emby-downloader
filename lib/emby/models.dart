@@ -187,6 +187,7 @@ class EmbyItem {
     this.locationType,
     this.mediaSources = const [],
     this.people = const [],
+    this.playbackPositionTicks,
   });
 
   final String id;
@@ -213,6 +214,9 @@ class EmbyItem {
   final String? locationType;
   final List<EmbyMediaSource> mediaSources;
   final List<EmbyPerson> people;
+
+  /// From `UserData.PlaybackPositionTicks`, when the user endpoint returns it.
+  final int? playbackPositionTicks;
 
   bool get isVirtual => locationType == 'Virtual';
 
@@ -256,6 +260,11 @@ class EmbyItem {
       final first = backdrops.first;
       if (first is String) backdrop = first;
     }
+    final userData = json['UserData'];
+    int? playbackTicks;
+    if (userData is Map) {
+      playbackTicks = (userData['PlaybackPositionTicks'] as num?)?.toInt();
+    }
     final itemStreams = _streamsFrom(json['MediaStreams']);
     var sources = _sourcesFrom(json['MediaSources']);
     if (sources.isNotEmpty &&
@@ -296,6 +305,7 @@ class EmbyItem {
         for (final person in (json['People'] as List?) ?? const [])
           if (person is Map<String, dynamic>) EmbyPerson.fromJson(person),
       ],
+      playbackPositionTicks: playbackTicks,
     );
   }
 }

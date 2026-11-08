@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'app.dart';
 import 'downloads/download_service.dart';
@@ -8,6 +9,7 @@ import 'storage/settings_store.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  MediaKit.ensureInitialized();
   final settings = SettingsStore();
   await settings.load();
   final store = SessionStore();

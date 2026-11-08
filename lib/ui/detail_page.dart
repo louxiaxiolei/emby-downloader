@@ -5,9 +5,11 @@ import 'package:provider/provider.dart';
 import '../downloads/download_service.dart';
 import '../emby/api.dart';
 import '../emby/models.dart';
+import '../emby/playback.dart';
 import '../emby/urls.dart';
 import '../session_controller.dart';
 import '../theme.dart';
+import 'player_page.dart';
 import 'season_page.dart';
 import 'widgets.dart';
 
@@ -28,6 +30,7 @@ class _DetailPageState extends State<DetailPage> {
   String? _error;
   var _sourceIndex = 0;
   var _downloading = false;
+  var _playing = false;
 
   @override
   void initState() {
@@ -65,7 +68,58 @@ class _DetailPageState extends State<DetailPage> {
     }
   }
 
+  Future<void> _play(EmbyItem item) async {
+    if (_playing) return;
+    final client = context.read<SessionController>().client;
+    if (client == null) return;
+    final source = item.mediaSources.isEmpty
+        ? null
+        : item.mediaSources[_sourceIndex.clamp(0, item.mediaSources.length - 1)];
+    setState(() => _playing = true);
+    try {
+      Map<String, dynamic>? info;
+      try {
+        info = await client.playbackInfo(
+          itemId: item.id,
+          mediaSourceId: source?.id,
+          startTimeTicks: item.playbackPositionTicks ?? 0,
+        );
+      } on EmbyUnauthorized {
+        rethrow;
+      } catch (_) {
+        info = null;
+      }
+      final playback = resolvePlayback(
+        base: client.session.base,
+        apiRoot: client.session.apiRoot,
+        accessToken: client.session.accessToken,
+        itemId: item.id,
+        mediaSourceId: source?.id,
+        container: source?.container,
+        playbackInfo: info,
+        knownStreams: source?.streams ?? const [],
+        resume: resumePosition(item.playbackPositionTicks, item.runTimeTicks),
+        headers: client.headers,
+      );
+      if (!mounted) return;
+      await Navigator.of(context).push(
+        MaterialPageRoute<void>(
+          builder: (_) => PlayerPage(title: mediaTitle(item), itemId: item.id, playback: playback),
+        ),
+      );
+    } on EmbyUnauthorized {
+      if (!mounted) return;
+      await context.read<SessionController>().invalidate();
+      if (mounted) Navigator.of(context).popUntil((route) => route.isFirst);
+    } catch (error) {
+      if (mounted) await showMessage(context, friendlyError(error));
+    } finally {
+      if (mounted) setState(() => _playing = false);
+    }
+  }
+
   Future<void> _download(EmbyItem item) async {
+    if (_downloading) return;
     final client = context.read<SessionController>().client;
     if (client == null) return;
     final source = item.mediaSources.isEmpty
@@ -132,6 +186,18 @@ class _DetailPageState extends State<DetailPage> {
                           _subtitleList(item),
                           const SizedBox(height: 16),
                           FilledButton.icon(
+                            onPressed: _playing ? null : () => _play(item),
+                            icon: _playing
+                                ? const SizedBox(
+                                    width: 18,
+                                    height: 18,
+                                    child: CircularProgressIndicator(strokeWidth: 2),
+                                  )
+                                : const Icon(Icons.play_arrow),
+                            label: const Text('播放'),
+                          ),
+                          const SizedBox(height: 8),
+                          OutlinedButton.icon(
                             onPressed: _downloading ? null : () => _download(item),
                             icon: _downloading
                                 ? const SizedBox(

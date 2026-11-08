@@ -14,6 +14,8 @@ import '../emby/models.dart';
 import '../emby/plan.dart';
 import '../emby/urls.dart';
 import '../storage/settings_store.dart';
+import 'queue.dart';
+import 'speed.dart';
 
 const kDownloadGroup = 'emby';
 
@@ -85,6 +87,7 @@ class LiveDownload {
   String? remainingLabel;
   int? httpStatus;
   String? error;
+  final SpeedTracker speed = SpeedTracker();
 
   DownloadMeta get meta => DownloadMeta.decode(task.metaData);
 
@@ -112,6 +115,7 @@ class DownloadService extends ChangeNotifier {
   String? initError;
   StreamSubscription<TaskUpdate>? _subscription;
   var _ready = false;
+  final Set<String> _inFlight = {};
 
   int get activeCount => live.where((item) => item.active).length;
 
@@ -260,31 +264,45 @@ class DownloadService extends ChangeNotifier {
         skipped++;
         continue;
       }
-      if (hasVideo(item.id)) {
+      if (itemAlreadyQueued(
+        itemId: item.id,
+        live: [for (final entry in live) _tracked(entry)],
+        savedVideoItemIds: [
+          for (final file in files)
+            if (file.kind == 'video') file.itemId,
+        ],
+        inFlightItemIds: _inFlight,
+      )) {
         skipped++;
         continue;
       }
-      live.removeWhere(
-        (entry) =>
-            entry.meta.itemId == item.id &&
-            (entry.status == TaskStatus.failed || entry.status == TaskStatus.notFound),
-      );
-      final source = preferred[item.id] ??
-          (item.mediaSources.isEmpty ? null : item.mediaSources.first);
-      final plans = planItemDownload(
-        apiRoot: client.session.apiRoot,
-        accessToken: client.session.accessToken,
-        item: item,
-        source: source,
-        usedNames: names,
-      );
-      for (final plan in plans) {
-        final task = _task(plan, client);
-        final ok = await FileDownloader().enqueue(task);
-        if (ok) {
-          live.add(LiveDownload(task: task, status: TaskStatus.enqueued));
-          enqueued++;
+      _inFlight.add(item.id);
+      try {
+        live.removeWhere(
+          (entry) =>
+              entry.meta.itemId == item.id &&
+              (entry.status == TaskStatus.failed || entry.status == TaskStatus.notFound),
+        );
+        final source = preferred[item.id] ??
+            (item.mediaSources.isEmpty ? null : item.mediaSources.first);
+        final plans = planItemDownload(
+          apiRoot: client.session.apiRoot,
+          accessToken: client.session.accessToken,
+          item: item,
+          source: source,
+          usedNames: names,
+        );
+        for (final plan in plans) {
+          final task = _task(plan, client);
+          final ok = await FileDownloader().enqueue(task);
+          if (ok) {
+            // The status callback may already have inserted this task id.
+            _upsert(task, TaskStatus.enqueued, keepExistingStatus: true);
+            enqueued++;
+          }
         }
+      } finally {
+        _inFlight.remove(item.id);
       }
     }
     notifyListeners();
@@ -332,23 +350,30 @@ class DownloadService extends ChangeNotifier {
       case TaskStatusUpdate status:
         await _onStatus(task, status);
       case TaskProgressUpdate progress:
-        final entry = _find(task.taskId);
-        if (entry == null) return;
+        final entry = _find(task.taskId) ?? _upsert(task, TaskStatus.running);
         entry.progress = progress.progress;
-        entry.speedLabel = progress.hasNetworkSpeed ? progress.networkSpeedAsString : null;
-        entry.remainingLabel = progress.hasTimeRemaining
-            ? progress.timeRemainingAsString
-            : null;
+        _applySpeed(entry, progress);
         notifyListeners();
     }
   }
 
   Future<void> _onStatus(DownloadTask task, TaskStatusUpdate update) async {
-    final entry = _find(task.taskId) ?? LiveDownload(task: task, status: update.status);
-    if (_find(task.taskId) == null &&
-        update.status != TaskStatus.complete &&
-        update.status != TaskStatus.canceled) {
-      live.add(entry);
+    if (update.status == TaskStatus.complete || update.status == TaskStatus.canceled) {
+      final entry = _find(task.taskId);
+      if (entry != null) entry.status = update.status;
+    } else {
+      _upsert(task, update.status);
+    }
+    final entry = _find(task.taskId);
+    if (entry == null) {
+      if (update.status == TaskStatus.complete) {
+        await _archive(task);
+        await FileDownloader().database.deleteRecordWithId(task.taskId);
+      } else if (update.status == TaskStatus.canceled) {
+        await FileDownloader().database.deleteRecordWithId(task.taskId);
+      }
+      notifyListeners();
+      return;
     }
     entry.status = update.status;
     entry.httpStatus = update.responseStatusCode;
@@ -395,8 +420,9 @@ class DownloadService extends ChangeNotifier {
       url: meta.urls[nextStage],
       metaData: meta.copyWith(stage: nextStage).encode(),
     );
-    live.add(LiveDownload(task: next, status: TaskStatus.enqueued));
-    return FileDownloader().enqueue(next);
+    final ok = await FileDownloader().enqueue(next);
+    if (ok) _upsert(next, TaskStatus.enqueued, keepExistingStatus: true);
+    return ok;
   }
 
   Future<void> _archive(DownloadTask task) async {
@@ -468,6 +494,61 @@ class DownloadService extends ChangeNotifier {
   LiveDownload? _find(String taskId) {
     for (final entry in live) {
       if (entry.task.taskId == taskId) return entry;
+    }
+    return null;
+  }
+
+  LiveDownload _upsert(DownloadTask task, TaskStatus status, {bool keepExistingStatus = false}) {
+    final existing = _find(task.taskId);
+    if (existing != null) {
+      if (!keepExistingStatus) existing.status = status;
+      return existing;
+    }
+    final created = LiveDownload(task: task, status: status);
+    live.add(created);
+    return created;
+  }
+
+  TrackedDownload _tracked(LiveDownload entry) {
+    return TrackedDownload(
+      taskId: entry.task.taskId,
+      itemId: entry.meta.itemId,
+      kind: entry.meta.kind,
+      status: switch (entry.status) {
+        TaskStatus.enqueued => 'enqueued',
+        TaskStatus.running => 'running',
+        TaskStatus.paused => 'paused',
+        TaskStatus.waitingToRetry => 'waiting',
+        TaskStatus.complete => 'complete',
+        TaskStatus.canceled => 'canceled',
+        TaskStatus.failed || TaskStatus.notFound => 'failed',
+      },
+    );
+  }
+
+  void _applySpeed(LiveDownload entry, TaskProgressUpdate update) {
+    if (update.progress <= 0 || !update.hasExpectedFileSize || update.expectedFileSize <= 0) {
+      return;
+    }
+    final bytes = (update.progress * update.expectedFileSize).round();
+    final estimate = entry.speed.addSample(
+      at: DateTime.now(),
+      bytes: bytes,
+      totalBytes: update.expectedFileSize,
+    );
+    if (estimate == null) return;
+    entry.speedLabel = formatTransferSpeed(estimate.bytesPerSecond);
+    entry.remainingLabel = estimate.remaining == null ? null : formatClock(estimate.remaining!);
+  }
+
+  /// Filesystem path the in-app player can open. Content URIs are not included.
+  Future<String?> readableFilePath(LocalFile file) async {
+    final candidates = <String>[
+      if (file.sharedPath != null && file.sharedPath!.startsWith('/')) file.sharedPath!,
+      await _appPath(file),
+    ];
+    for (final path in candidates) {
+      if (await File(path).exists()) return path;
     }
     return null;
   }
