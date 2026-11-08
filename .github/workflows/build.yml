@@ -30,7 +30,13 @@ jobs:
           bash tool/remux_sample.sh
       - name: Build split APKs
         run: |
-          flutter build apk --release --split-per-abi || flutter build apk --release --split-per-abi
+          set -euo pipefail
+          # services.gradle.org redirects to a GitHub release that has been returning 504.
+          if ! curl -fsI --retry 2 --max-time 20 "https://github.com/gradle/gradle-distributions/releases/download/v8.12.0/gradle-8.12-all.zip" >/dev/null; then
+            echo "GitHub Gradle release is unavailable; using a mirror"
+            python3 tool/use_gradle_mirror.py
+          fi
+          flutter build apk --release --split-per-abi
       - name: Name release APKs
         run: |
           mkdir -p artifacts
@@ -57,17 +63,10 @@ jobs:
           flutter-version: "3.35.7"
           cache: true
       - run: flutter pub get
+      - name: Patch the mpv framework symlink script
+        run: python3 tool/patch_mpv_symlinks.py
       - name: Build unsigned iOS
-        run: |
-          set -euo pipefail
-          build() { flutter build ios --release --no-codesign; }
-          if ! build; then
-            echo "iOS build failed; clearing CocoaPods and the mpv download, then retrying once"
-            rm -rf ios/Pods ios/.symlinks build/ios
-            rm -rf "$HOME"/.pub-cache/hosted/pub.dev/media_kit_libs_ios_video-*/ios/Frameworks
-            rm -rf "$HOME"/.pub-cache/hosted/pub.dev/media_kit_libs_ios_video-*/ios/.cache
-            build
-          fi
+        run: flutter build ios --release --no-codesign
       - name: Pack unsigned IPA
         run: bash tool/pack_unsigned_ipa.sh build/ios/iphoneos/Runner.app artifacts/emby-downloader.ipa
       - uses: actions/upload-artifact@v4
