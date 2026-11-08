@@ -4,6 +4,7 @@ import 'package:emby_downloader/emby/models.dart';
 import 'package:emby_downloader/emby/playback.dart';
 import 'package:emby_downloader/emby/playback_guard.dart';
 import 'package:emby_downloader/emby/urls.dart';
+import 'package:emby_downloader/recordings/clip.dart';
 import 'package:emby_downloader/recordings/names.dart';
 import 'package:emby_downloader/recordings/photos_plan.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -249,6 +250,23 @@ void main() {
       recordingTitle(EmbyItem(id: '1', name: '第一话', type: 'Episode', seriesName: '一拳超人', parentIndexNumber: 1, indexNumber: 1)),
       '一拳超人',
     );
+  });
+
+  test('an emby clip url starts at the recorded position without Static', () {
+    final url = embyClipUrl(
+      'http://host/emby/Videos/1/stream.mkv?Static=true&MediaSourceId=source-1&api_key=token-1',
+      const Duration(minutes: 24, seconds: 6),
+    );
+    expect(url, isNotNull);
+    expect(url, contains('/Videos/1/stream.mp4'));
+    expect(url, isNot(contains('Static=')));
+    expect(url, contains('StartTimeTicks=${ticksFor(const Duration(minutes: 24, seconds: 6))}'));
+    expect(url, contains('api_key=token-1'));
+    expect(url, contains('MediaSourceId=source-1'));
+    expect(embyClipUrl('file:///tmp/movie.mkv', Duration.zero), isNull);
+    expect(mpvSeconds(const Duration(minutes: 24, seconds: 6)), '1446.000');
+    expect(recordSpanIsUsable(const Duration(seconds: 10), const Duration(seconds: 10, milliseconds: 100)), isFalse);
+    expect(recordSpanIsUsable(const Duration(seconds: 10), const Duration(seconds: 11)), isTrue);
   });
 
   test('a frame on screen is not a fatal playback error', () {

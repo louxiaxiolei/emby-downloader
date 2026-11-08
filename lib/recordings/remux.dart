@@ -49,6 +49,9 @@ Future<void> remuxWithMpv({
   required bool copyVideo,
   required bool copyAudio,
   String? videoTag,
+  Duration? start,
+  Duration? end,
+  Map<String, String> headers = const {},
 }) async {
   final player = Player(configuration: const PlayerConfiguration(vo: 'null', muted: true));
   final errors = <String>[];
@@ -63,6 +66,11 @@ Future<void> remuxWithMpv({
     await native.setProperty('of', format);
     await native.setProperty('ovc', copyVideo ? 'copy' : 'libx264');
     await native.setProperty('oac', copyAudio ? 'copy' : 'aac');
+    try {
+      await native.setProperty('untimed', 'yes');
+    } catch (error) {
+      NetLog.instance.add('mpv untimed 失败 $error');
+    }
     if (!copyVideo) {
       await native.setProperty('ovcopts', 'preset=veryfast,crf=23');
     } else if (videoTag != null && videoTag.isNotEmpty) {
@@ -79,8 +87,12 @@ Future<void> remuxWithMpv({
     completedSub = player.stream.completed.listen((value) {
       if (value && !done.isCompleted) done.complete();
     });
-    errorSub = player.stream.error.listen(errors.add);
-    await player.open(Media(Uri.file(input).toString()));
+    errorSub = player.stream.error.listen((message) {
+      errors.add(message);
+      NetLog.instance.add('封装 mpv 错误 $message');
+    });
+    final source = input.contains('://') ? input : Uri.file(input).toString();
+    await player.open(Media(source, httpHeaders: headers.isEmpty ? null : headers, start: start, end: end));
     await player.play();
     await done.future.timeout(const Duration(minutes: 20));
     final file = File(output);
