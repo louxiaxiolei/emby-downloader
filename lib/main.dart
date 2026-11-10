@@ -15,19 +15,11 @@ Future<void> main() async {
   final store = SessionStore();
   final downloads = DownloadService(settings);
   await downloads.init();
-  String? message;
   final session = SessionController(store: store);
   try {
-    final saved = await store.read();
-    if (saved != null) {
-      final restored = SessionController(store: store, initial: saved);
-      await restored.restore();
-      runApp(EmbyApp(session: restored, downloads: downloads, settings: settings));
-      return;
-    }
+    await session.restore();
   } catch (_) {
-    message = '无法读取已保存的登录信息，请重新登录';
+    session.authMessage = '无法读取已保存的登录信息，请重新登录';
   }
-  session.authMessage = message;
   runApp(EmbyApp(session: session, downloads: downloads, settings: settings));
 }

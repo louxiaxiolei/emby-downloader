@@ -46,10 +46,39 @@ class _HomePageState extends State<HomePage> {
   Color? _tint;
   var _generation = 0;
 
+  SessionController? _session;
+  var _accountKey = '';
+
   @override
-  void initState() {
-    super.initState();
-    _load();
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final next = context.read<SessionController>();
+    if (!identical(next, _session)) {
+      _session?.removeListener(_onAccount);
+      _session = next;
+      next.addListener(_onAccount);
+      _accountKey = '';
+    }
+    _onAccount();
+  }
+
+  @override
+  void dispose() {
+    _session?.removeListener(_onAccount);
+    super.dispose();
+  }
+
+  void _onAccount() {
+    final session = _session;
+    final key = '${session?.session?.base}|${session?.session?.userId}';
+    if (key == _accountKey) return;
+    _accountKey = key;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      final current = '${_session?.session?.base}|${_session?.session?.userId}';
+      if (current != key) return;
+      _load();
+    });
   }
 
   Future<void> _load() async {

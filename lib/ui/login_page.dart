@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 
 import '../emby/api.dart';
 import '../session_controller.dart';
+import '../storage/session_store.dart';
 import '../theme.dart';
 import 'downloads_page.dart';
 
@@ -28,6 +29,8 @@ class LoginPage extends StatelessWidget {
     final session = context.watch<SessionController>();
     return LoginForm(
       banner: session.authMessage,
+      savedAccounts: session.accounts,
+      onSwitch: (id) => session.switchTo(id),
       onOpenDownloads: () {
         Navigator.of(context).push(
           MaterialPageRoute<void>(builder: (_) => const DownloadsPage()),
@@ -51,11 +54,15 @@ class LoginForm extends StatefulWidget {
     required this.onSubmit,
     this.onOpenDownloads,
     this.banner,
+    this.savedAccounts = const [],
+    this.onSwitch,
   });
 
   final Future<void> Function(LoginInput input) onSubmit;
   final VoidCallback? onOpenDownloads;
   final String? banner;
+  final List<SavedAccount> savedAccounts;
+  final ValueChanged<String>? onSwitch;
 
   @override
   State<LoginForm> createState() => _LoginFormState();
@@ -89,6 +96,7 @@ class _LoginFormState extends State<LoginForm> {
       _busy = true;
       _error = null;
     });
+    final navigator = Navigator.of(context);
     try {
       await widget.onSubmit(
         LoginInput(
@@ -101,7 +109,9 @@ class _LoginFormState extends State<LoginForm> {
     } catch (error) {
       if (mounted) setState(() => _error = friendlyError(error));
     } finally {
-      if (mounted) setState(() => _busy = false);
+      final leave = mounted && _error == null && navigator.canPop();
+      if (mounted && !leave) setState(() => _busy = false);
+      if (leave) navigator.pop();
     }
   }
 
@@ -142,6 +152,34 @@ class _LoginFormState extends State<LoginForm> {
                   if (widget.banner != null) ...[
                     const SizedBox(height: 16),
                     Text(widget.banner!, style: const TextStyle(color: brass)),
+                  ],
+                  if (widget.savedAccounts.isNotEmpty) ...[
+                    const SizedBox(height: 16),
+                    const Text('已保存的账号', style: TextStyle(fontWeight: FontWeight.w700)),
+                    for (final account in widget.savedAccounts)
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(account.session.serverName),
+                        subtitle: Text(
+                          account.needsReauth
+                              ? '${account.session.username} · 需要重新登录'
+                              : account.session.username,
+                        ),
+                        trailing: Icon(account.needsReauth ? Icons.key : Icons.swap_horiz),
+                        onTap: () {
+                          if (!account.needsReauth) {
+                            widget.onSwitch?.call(account.id);
+                            return;
+                          }
+                          setState(() {
+                            _server.text = account.session.base;
+                            _username.text = account.session.username;
+                            _trust = account.session.allowBadCertificate;
+                            _password.clear();
+                            _error = null;
+                          });
+                        },
+                      ),
                   ],
                   const SizedBox(height: 28),
                   TextField(

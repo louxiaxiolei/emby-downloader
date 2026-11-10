@@ -1,6 +1,7 @@
 import 'dart:io';
 
 import 'package:flutter/foundation.dart';
+import 'package:http/http.dart' as http;
 
 import 'emby/api.dart';
 import 'emby/models.dart';
@@ -12,31 +13,33 @@ class SessionController extends ChangeNotifier {
   final SessionStore store;
   EmbySession? _session;
   EmbyClient? _client;
+  List<SavedAccount> accounts = const [];
   String? authMessage;
 
   EmbySession? get session => _session;
   EmbyClient? get client => _client;
+  String? get activeAccountId => _session == null ? null : accountId(_session!);
 
-  /// Used by tests, and safe for a restored session that already has a client.
   void bindClient(EmbyClient client) {
     _client = client;
     _session = client.session;
     notifyListeners();
   }
+
   bool get signedIn => _session != null && _client != null;
 
   Future<void> restore() async {
-    final current = _session;
-    if (current == null) return;
-    final deviceId = await store.deviceId();
-    _client = EmbyClient(
-      session: current,
-      deviceId: deviceId,
-      clientName: embyClientName(),
-      httpClient: createHttpClient(allowBadCertificate: current.allowBadCertificate),
-      ownsClient: true,
-    );
-    notifyListeners();
+    final book = await store.loadBook();
+    accounts = book.accounts;
+    final active = book.active;
+    if (active == null || active.needsReauth) {
+      _client?.close();
+      _client = null;
+      _session = active?.session;
+      notifyListeners();
+      return;
+    }
+    await _open(active.session);
   }
 
   Future<void> login({
@@ -57,41 +60,86 @@ class SessionController extends ChangeNotifier {
         allowBadCertificate: allowBadCertificate,
         httpClient: httpClient,
       );
+      final book = await store.upsert(session);
+      accounts = book.accounts;
       _client?.close();
-      _session = session;
-      _client = EmbyClient(
-        session: session,
-        deviceId: deviceId,
-        clientName: embyClientName(),
-        httpClient: httpClient,
-        ownsClient: true,
-      );
-      await store.write(session);
+      await _open(session, httpClient: httpClient);
       authMessage = null;
-      notifyListeners();
     } catch (error) {
       httpClient.close();
       rethrow;
     }
   }
 
-  Future<void> logout() async {
-    try {
-      await _client?.logout();
-    } catch (_) {}
-    _client?.close();
-    _client = null;
-    _session = null;
-    await store.clear();
+  /// Drops one saved account. Downloads already queued keep the token they started with.
+  Future<void> removeAccount(String id) async {
+    final book = await store.remove(id);
+    accounts = book.accounts;
+    if (activeAccountId == id) {
+      _client?.close();
+      _client = null;
+      _session = null;
+      final next = book.active;
+      if (next != null && !next.needsReauth) {
+        await _open(next.session);
+        return;
+      }
+      _session = next?.session;
+    }
     notifyListeners();
   }
 
+  Future<void> switchTo(String id) async {
+    SavedAccount? account;
+    for (final candidate in accounts) {
+      if (candidate.id == id) account = candidate;
+    }
+    if (account == null || account.needsReauth) return;
+    if (account.id == activeAccountId && _client != null) return;
+    _client?.close();
+    await store.setActive(id);
+    await _open(account.session);
+  }
+
+  Future<void> logout() => _session == null ? store.clear() : removeAccount(accountId(_session!));
+
+  /// Only the account that failed is marked. Another saved account becomes active when one exists.
   Future<void> invalidate() async {
-    authMessage = '登录已失效，请重新登录';
+    final current = _session;
+    if (current != null) {
+      final book = await store.markReauth(current);
+      accounts = book.accounts;
+    }
     _client?.close();
     _client = null;
+    SavedAccount? next;
+    for (final account in accounts) {
+      if (!account.needsReauth) {
+        next = account;
+        break;
+      }
+    }
+    if (next != null) {
+      authMessage = current == null ? '登录已失效' : '「${current.username}」登录已失效，已切换到「${next.session.username}」';
+      await store.setActive(next.id);
+      await _open(next.session);
+      return;
+    }
     _session = null;
-    await store.clear();
+    authMessage = '登录已失效，请重新登录';
+    notifyListeners();
+  }
+
+  Future<void> _open(EmbySession session, {http.Client? httpClient}) async {
+    final deviceId = await store.deviceId();
+    _session = session;
+    _client = EmbyClient(
+      session: session,
+      deviceId: deviceId,
+      clientName: embyClientName(),
+      httpClient: httpClient ?? createHttpClient(allowBadCertificate: session.allowBadCertificate),
+      ownsClient: true,
+    );
     notifyListeners();
   }
 }
