@@ -47,19 +47,63 @@ for _ in $(seq 1 60); do
 done
 curl -fsS -o /dev/null "$base/System/Info/Public"
 
-curl -fsS -o /dev/null -X POST "$base/Startup/Configuration" \
-  -H 'Content-Type: application/json' \
-  -d '{"UICulture":"en-us","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}'
-curl -fsS -o /dev/null -X POST "$base/Startup/User" \
-  -H 'Content-Type: application/json' \
-  -d '{"Name":"clip","Password":"clip-pass-1"}'
-curl -fsS -o /dev/null -X POST "$base/Startup/Complete"
+# Info/Public answers before the wizard will accept configuration.
+post_ok() {
+  local url="$1"
+  local data="$2"
+  local code body
+  body=$(mktemp)
+  for _ in $(seq 1 30); do
+    code=$(curl -sS -o "$body" -w '%{http_code}' -X POST "$url" \
+      -H 'Content-Type: application/json' -d "$data" || echo 000)
+    if [ "$code" = 200 ] || [ "$code" = 204 ]; then
+      rm -f "$body"
+      return 0
+    fi
+    sleep 2
+  done
+  echo "POST $url failed HTTP $code" >&2
+  cat "$body" >&2 || true
+  rm -f "$body"
+  return 1
+}
+post_ok "$base/Startup/Configuration" '{"UICulture":"en-us","MetadataCountryCode":"US","PreferredMetadataLanguage":"en"}'
+post_ok "$base/Startup/User" '{"Name":"clip","Password":"clip-pass-1"}'
+complete_code=000
+complete_body=$(mktemp)
+for _ in $(seq 1 30); do
+  complete_code=$(curl -sS -o "$complete_body" -w '%{http_code}' -X POST "$base/Startup/Complete" || echo 000)
+  if [ "$complete_code" = 200 ] || [ "$complete_code" = 204 ]; then
+    break
+  fi
+  sleep 2
+done
+if [ "$complete_code" != 200 ] && [ "$complete_code" != 204 ]; then
+  echo "POST $base/Startup/Complete failed HTTP $complete_code" >&2
+  cat "$complete_body" >&2 || true
+  exit 1
+fi
+rm -f "$complete_body"
 
 auth='Emby Client="emby-it", Device="ci", DeviceId="ci-device", Version="1.0.0"'
-curl -fsS -o "$work/auth.json" -X POST "$base/Users/AuthenticateByName" \
-  -H 'Content-Type: application/json' \
-  -H "X-Emby-Authorization: $auth" \
-  -d '{"Username":"clip","Pw":"clip-pass-1"}'
+auth_code=000
+for _ in $(seq 1 15); do
+  auth_code=$(curl -sS -o "$work/auth.json" -w '%{http_code}' -X POST "$base/Users/AuthenticateByName" \
+    -H 'Content-Type: application/json' \
+    -H "X-Emby-Authorization: $auth" \
+    -d '{"Username":"clip","Pw":"clip-pass-1"}' || echo 000)
+  if [ "$auth_code" = 200 ]; then
+    break
+  fi
+  sleep 2
+done
+if [ "$auth_code" != 200 ]; then
+  echo "AuthenticateByName failed HTTP $auth_code" >&2
+  cat "$work/auth.json" >&2 || true
+  echo >&2
+  curl -sS "$base/Users/Public" >&2 || true
+  exit 1
+fi
 token=$(python3 -c 'import json; print(json.load(open("'"$work/auth.json"'"))["AccessToken"])')
 user=$(python3 -c 'import json; print(json.load(open("'"$work/auth.json"'"))["User"]["Id"])')
 
@@ -72,9 +116,13 @@ curl -fsS -o /dev/null -X POST "$base/Library/VirtualFolders" \
 sleep 3
 "${docker_cmd[@]}" cp "$work/media/clip.mkv" emby-it:/media/clip.mkv
 
-curl -fsS -o /dev/null -X POST "$base/Users/New" \
+curl -fsS -o "$work/user2.json" -X POST "$base/Users/New" \
   -H "X-Emby-Token: $token" -H 'Content-Type: application/json' \
-  -d '{"Name":"clip2","Password":"clip-pass-2"}'
+  -d '{"Name":"clip2"}'
+user2=$(python3 -c 'import json; print(json.load(open("'"$work/user2.json"'"))["Id"])')
+curl -fsS -o /dev/null -X POST "$base/Users/$user2/Password" \
+  -H "X-Emby-Token: $token" -H 'Content-Type: application/json' \
+  -d '{"Id":"'"$user2"'","NewPw":"clip-pass-2"}'
 curl -fsS -o "$work/auth2.json" -X POST "$base/Users/AuthenticateByName" \
   -H 'Content-Type: application/json' \
   -H "X-Emby-Authorization: $auth" \
