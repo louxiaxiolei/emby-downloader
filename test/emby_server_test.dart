@@ -3,14 +3,17 @@ import 'dart:io';
 
 import 'package:emby_downloader/emby/net_log.dart';
 import 'package:emby_downloader/emby/urls.dart';
+import 'package:emby_downloader/recordings/clip_queue.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:media_kit/media_kit.dart';
 
 /// Runs only when [EMBY_IT_JSON] points at a file written by tool/emby_server_it.sh.
 void main() {
   final jsonPath = Platform.environment['EMBY_IT_JSON'];
   test(
-    'a separate mpv records a clip from a real Emby static stream and seeking returns',
+    'the app clip capture writes a mid-file Emby range with video, and a second user can read it',
     () async {
+      MediaKit.ensureInitialized();
       final info = jsonDecode(File(jsonPath!).readAsStringSync()) as Map<String, dynamic>;
       final url = staticStreamUri(
         apiRoot: info['apiRoot'] as String,
@@ -24,22 +27,15 @@ void main() {
       final work = Directory.systemTemp.createTempSync('emby-clip');
       addTearDown(() => work.deleteSync(recursive: true));
       final recorded = File('${work.path}/clip.mkv');
-
-      final capture = await Process.run('mpv', [
-        '--vo=null',
-        '--ao=null',
-        '--cache=yes',
-        '--demuxer-max-bytes=8MiB',
-        '--demuxer-readahead-secs=2',
-        '--demuxer-max-back-bytes=8MiB',
-        '--start=30',
-        '--end=36',
-        '--stream-record=${recorded.path}',
-        url,
-      ]);
-      expect(capture.exitCode, 0, reason: '${capture.stdout}\n${capture.stderr}');
-      expect(recorded.existsSync(), isTrue);
-      expect(recorded.lengthSync(), greaterThan(1024));
+      final bytes = await captureStreamRange(
+        url: url,
+        output: recorded.path,
+        headers: const {},
+        start: const Duration(seconds: 30),
+        end: const Duration(seconds: 36),
+        onProgress: (_) {},
+      );
+      expect(bytes, greaterThan(1024));
 
       final probe = await Process.run('ffprobe', [
         '-v',
@@ -57,8 +53,8 @@ void main() {
       final duration = double.parse(
         RegExp(r'duration=([0-9.]+)').firstMatch(text)!.group(1)!,
       );
-      // Started at 30s of a 40s file. The capture may read a little past
-      // --end, but it must not be the whole file from 0:00.
+      // Started at 30s of a 40s file. A little slack around the range is fine.
+      // The whole file from 0:00 is not.
       expect(duration, greaterThan(3));
       expect(duration, lessThan(20));
 
@@ -73,7 +69,17 @@ void main() {
         url,
       ]);
       expect(seek.exitCode, 0, reason: '${seek.stdout}\n${seek.stderr}');
+
+      final second = info['accessToken2'] as String?;
+      expect(second, isNotNull);
+      final other = await HttpClient().getUrl(Uri.parse(
+        '${info['apiRoot']}/Users/${info['userId2']}/Items/${info['itemId']}?api_key=$second',
+      ));
+      final otherResponse = await other.close();
+      expect(otherResponse.statusCode, 200);
+      await otherResponse.drain<void>();
     },
     skip: jsonPath == null ? 'set EMBY_IT_JSON to run against Emby Server' : false,
+    timeout: const Timeout(Duration(minutes: 4)),
   );
 }

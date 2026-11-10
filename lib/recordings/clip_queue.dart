@@ -33,6 +33,15 @@ class ClipJob {
   String? path;
 }
 
+class ClipException implements Exception {
+  ClipException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 class ClipRequest {
   const ClipRequest({
     required this.title,
@@ -84,7 +93,7 @@ class ClipQueue extends ChangeNotifier {
   Future<void> _run(ClipJob job, ClipRequest request) async {
     try {
       if (!recordSpanIsUsable(request.start, request.end)) {
-        throw StateError('片段太短');
+        throw ClipException('片段太短');
       }
       final directory = await recordingsDirectory();
       final temp = p.join(directory.path, 'clip-${job.id}.mkv');
@@ -102,7 +111,7 @@ class ClipQueue extends ChangeNotifier {
       );
       NetLog.instance.add('片段文件 ${bytes}B $temp');
       if (bytes < 1024) {
-        throw StateError('片段文件是空的（${bytes}B）');
+        throw ClipException('片段文件是空的（${bytes}B）');
       }
       final name = recordingFileName(
         title: request.title,
@@ -148,8 +157,14 @@ class ClipQueue extends ChangeNotifier {
   }
 }
 
-/// A second libmpv, started only for this clip. `stream-record` is set before
-/// the file opens, so it writes the packets this process actually reads.
+/// A second libmpv, started only for this clip. It never touches the player
+/// that is on screen.
+///
+/// media_kit creates that player with `vid=no` and never attaches a video
+/// view. `stream-record` then stays at 0 bytes even after `loadfile` seeks to
+/// the range and plays it: the demuxer does not start its recorder for this
+/// setup. `dump-cache` writes the packets this player already read, including
+/// the video track, once playback reaches [end].
 Future<int> captureStreamRange({
   required String url,
   required String output,
@@ -159,65 +174,93 @@ Future<int> captureStreamRange({
   required void Function(double progress) onProgress,
 }) async {
   final player = Player(
-    configuration: const PlayerConfiguration(vo: 'null', muted: true, bufferSize: 8 * 1024 * 1024),
+    configuration: const PlayerConfiguration(vo: 'null', muted: true, bufferSize: 32 * 1024 * 1024),
   );
   final errors = <String>[];
-  StreamSubscription<bool>? completedSub;
   StreamSubscription<String>? errorSub;
-  StreamSubscription<Duration>? positionSub;
   try {
     final native = player.platform;
     if (native is! NativePlayer) {
-      throw StateError('没有 mpv，不能生成片段');
+      throw ClipException('没有 mpv，不能生成片段');
     }
     final existing = File(output);
     if (await existing.exists()) await existing.delete();
-    await native.setProperty('stream-record', output);
-    await native.setProperty('demuxer-max-bytes', '8MiB');
-    await native.setProperty('demuxer-readahead-secs', '2');
-    await native.setProperty('demuxer-max-back-bytes', '8MiB');
-    final done = Completer<void>();
-    completedSub = player.stream.completed.listen((value) {
-      if (value && !done.isCompleted) done.complete();
-    });
+    // The on-screen player already owns the audio device. This one only reads.
+    await native.setProperty('ao', 'null');
+    await native.setProperty('vid', 'auto');
+    await native.setProperty('aid', 'auto');
+    await native.setProperty('cache', 'yes');
+    await native.setProperty('cache-on-disk', 'no');
+    final cache = _clipCacheMebibytes(end - start);
+    await native.setProperty('demuxer-max-bytes', '${cache}MiB');
+    await native.setProperty('demuxer-max-back-bytes', '${cache}MiB');
+    await native.setProperty('network-timeout', '60');
+    for (final entry in headers.entries) {
+      if (entry.key.toLowerCase() == 'accept') continue;
+      await native.command([
+        'change-list',
+        'http-header-fields',
+        'append',
+        '${entry.key}: ${entry.value}',
+      ]);
+    }
     errorSub = player.stream.error.listen((message) {
       errors.add(message);
       NetLog.instance.add('片段 mpv 错误 $message');
     });
+    final target = Uri.tryParse(url);
+    final loadUrl = target != null && target.isScheme('file') ? target.toFilePath() : url;
+    NetLog.instance.add('片段开始 ${NetLog.redact(Uri.parse(url))} ${mpvSeconds(start)}-${mpvSeconds(end)}');
+    await native.command([
+      'loadfile',
+      loadUrl,
+      'replace',
+      'start=${mpvSeconds(start)},end=${mpvSeconds(end)}',
+    ]);
+    await native.setProperty('pause', 'no');
+
     final spanMs = (end - start).inMilliseconds.clamp(1, 1 << 31);
-    positionSub = player.stream.position.listen((position) {
-      final doneMs = position - start;
-      final progress = (doneMs.inMilliseconds / spanMs).clamp(0.0, 1.0);
-      onProgress(progress);
-    });
-    await player.open(
-      Media(
-        url,
-        httpHeaders: headers.isEmpty ? null : headers,
-        start: start,
-        end: end,
-      ),
-    );
-    await player.play();
-    try {
-      await done.future.timeout(end - start + const Duration(minutes: 2));
-    } on TimeoutException {
-      NetLog.instance.add('片段等待结束超时，仍检查已写出的文件');
+    final deadline = DateTime.now().add(end - start + const Duration(minutes: 3));
+    var position = Duration.zero;
+    while (DateTime.now().isBefore(deadline)) {
+      final seconds = double.tryParse(await native.getProperty('time-pos'));
+      if (seconds != null) {
+        position = Duration(milliseconds: (seconds * 1000).round());
+        final doneMs = position - start;
+        onProgress((doneMs.inMilliseconds / spanMs).clamp(0.0, 1.0));
+      }
+      final eof = await native.getProperty('eof-reached');
+      if (eof == 'yes' || eof == 'true') break;
+      await Future<void>.delayed(const Duration(milliseconds: 200));
     }
-    await native.setProperty('stream-record', '');
-    await Future<void>.delayed(const Duration(milliseconds: 400));
-    final file = File(output);
-    final size = await file.exists() ? await file.length() : 0;
+    await native.command(['dump-cache', mpvSeconds(start), mpvSeconds(end), output]);
+    final size = await _fileSize(output);
+    NetLog.instance.add('片段写出 ${size}B 停在 ${formatClock(position)} $output');
     if (size < 1024) {
-      final detail = errors.isEmpty ? '没有写出文件' : errors.join(' ');
-      throw StateError(detail);
+      final detail = errors.isEmpty
+          ? '没有生成视频文件（${size}B，停在 ${formatClock(position)}）'
+          : errors.join(' ');
+      throw ClipException(detail);
     }
     onProgress(1);
     return size;
   } finally {
-    await completedSub?.cancel();
     await errorSub?.cancel();
-    await positionSub?.cancel();
     await player.dispose();
   }
+}
+
+/// Enough demuxer cache for this clip on the background player only.
+int _clipCacheMebibytes(Duration span) {
+  final seconds = span.inMilliseconds / 1000;
+  final estimate = (seconds * 8).ceil();
+  if (estimate < 32) return 32;
+  if (estimate > 160) return 160;
+  return estimate;
+}
+
+Future<int> _fileSize(String path) async {
+  final file = File(path);
+  if (!await file.exists()) return 0;
+  return file.length();
 }

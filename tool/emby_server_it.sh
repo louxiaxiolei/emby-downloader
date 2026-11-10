@@ -72,9 +72,18 @@ curl -fsS -o /dev/null -X POST "$base/Library/VirtualFolders" \
 sleep 3
 "${docker_cmd[@]}" cp "$work/media/clip.mkv" emby-it:/media/clip.mkv
 
-python3 - "$base" "$token" "$user" "$work/item.json" <<'PY'
+curl -fsS -o /dev/null -X POST "$base/Users/New" \
+  -H "X-Emby-Token: $token" -H 'Content-Type: application/json' \
+  -d '{"Name":"clip2","Password":"clip-pass-2"}'
+curl -fsS -o "$work/auth2.json" -X POST "$base/Users/AuthenticateByName" \
+  -H 'Content-Type: application/json' \
+  -H "X-Emby-Authorization: $auth" \
+  -d '{"Username":"clip2","Pw":"clip-pass-2"}'
+
+python3 - "$base" "$token" "$user" "$work/item.json" "$work/auth2.json" <<'PY'
 import json, sys, time, urllib.request
-base, token, user, dest = sys.argv[1:]
+base, token, user, dest, auth2_path = sys.argv[1:]
+auth2 = json.load(open(auth2_path))
 deadline = time.time() + 150
 found = None
 while time.time() < deadline:
@@ -93,6 +102,8 @@ while time.time() < deadline:
                 "itemId": item["Id"],
                 "mediaSourceId": source.get("Id") or "",
                 "container": source.get("Container") or "mkv",
+                "accessToken2": auth2["AccessToken"],
+                "userId2": auth2["User"]["Id"],
             }
             break
     if found:
