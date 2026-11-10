@@ -11,11 +11,13 @@ void main() {
   test('captureStreamRange writes a mid-file clip with video', () async {
     if (!await _hasTool('ffmpeg') || !await _hasTool('ffprobe')) {
       markTestSkipped('ffmpeg is not installed');
+      return;
     }
     try {
       MediaKit.ensureInitialized();
     } catch (error) {
       markTestSkipped('libmpv is not installed: $error');
+      return;
     }
     final work = Directory.systemTemp.createTempSync('clip-capture');
     addTearDown(() => work.deleteSync(recursive: true));
