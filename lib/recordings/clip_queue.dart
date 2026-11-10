@@ -189,6 +189,9 @@ Future<int> captureStreamRange({
     await native.setProperty('ao', 'null');
     await native.setProperty('vid', 'auto');
     await native.setProperty('aid', 'auto');
+    // Don't wait on the audio clock. A headless runner has no sound device,
+    // and the on-screen player already owns it on a phone.
+    await native.setProperty('untimed', 'yes');
     await native.setProperty('cache', 'yes');
     await native.setProperty('cache-on-disk', 'no');
     final cache = _clipCacheMebibytes(end - start);
@@ -211,12 +214,11 @@ Future<int> captureStreamRange({
     final target = Uri.tryParse(url);
     final loadUrl = target != null && target.isScheme('file') ? target.toFilePath() : url;
     NetLog.instance.add('片段开始 ${NetLog.redact(Uri.parse(url))} ${mpvSeconds(start)}-${mpvSeconds(end)}');
-    await native.command([
-      'loadfile',
-      loadUrl,
-      'replace',
-      'start=${mpvSeconds(start)},end=${mpvSeconds(end)}',
-    ]);
+    // Set the range as properties. mpv 0.41 treats loadfile's fourth argument
+    // as a playlist index, so passing start/end there never ends the file.
+    await native.setProperty('start', mpvSeconds(start));
+    await native.setProperty('end', mpvSeconds(end));
+    await native.command(['loadfile', loadUrl, 'replace']);
     await native.setProperty('pause', 'no');
 
     final spanMs = (end - start).inMilliseconds.clamp(1, 1 << 31);
